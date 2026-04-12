@@ -57,7 +57,7 @@ ToolExecutor (per call)
 
 ## Design decisions worth explaining
 
-**Why Kahn's over DFS topological sort?** Both work. I chose Kahn's because cycle detection falls out of it for free - any node with nonzero in-degree after the sweep is part of a cycle, so you don't need a separate visited-set check. With DFS you have to track that separately. For a tool with LLM-scale dependency graphs (realistically 2–10 nodes per turn) the difference doesn't matter for performance, but the cycle detection being implicit rather than bolted on felt cleaner.
+**Why Kahn's over DFS topological sort?** Both work. I chose Kahn's because cycle detection falls out of it for free - any node with nonzero in-degree after the sweep is part of a cycle, so you don't need a separate visited-set check. With DFS you have to track that separately. For a tool with LLM-scale dependency graphs (realistically 2-10 nodes per turn) the difference doesn't matter for performance, but the cycle detection being implicit rather than bolted on felt cleaner.
 
 **Why `Promise.allSettled` over `Promise.all`?** `Promise.all` short-circuits on the first rejection. A failure in one parallel tool call should not cancel the others - the model receives all results, including errors, and decides what to do next.
 
