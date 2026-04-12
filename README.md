@@ -106,6 +106,8 @@ npm run build
 
 ## Quick start
 
+Run `npm run build` first, or import from `"./src/index.js"` for local development.
+
 ```typescript
 import { Agent, ToolRegistry, calculatorTool, webSearchTool } from "liminal";
 
