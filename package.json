@@ -1,0 +1,70 @@
+{
+  "name": "liminal",
+  "version": "0.2.0",
+  "description": "Tool-use orchestration for the Anthropic API - typed errors, SHA-256 content-hash caching, DAG scheduling, typed event stream, and structured observability.",
+  "keywords": [
+    "llm",
+    "agent",
+    "anthropic",
+    "claude",
+    "tool-use",
+    "orchestration",
+    "typescript",
+    "dag",
+    "scheduler",
+    "events",
+    "observability"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "Bonnie McConnell",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bonnie-mcconnell/liminal"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --project tsconfig.test.json --noEmit",
+    "lint": "eslint src tests examples",
+    "format": "prettier --write src tests examples",
+    "format:check": "prettier --check src tests examples",
+    "demo": "tsx examples/research-agent.ts",
+    "demo:dry": "tsx examples/research-agent.ts --dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
