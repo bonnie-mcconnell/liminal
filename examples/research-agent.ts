@@ -26,6 +26,7 @@ import {
   calculatorTool,
   webSearchTool,
   fileReaderTool,
+  fetchTool,
   renderTrace,
 } from "../src/index.js";
 
@@ -37,10 +38,12 @@ You are a research assistant. Complete all of the following:
 3. Calculate: a 500-person engineering company has 62% developers, and 40%
    of those use TypeScript. How many TypeScript developers is that?
 4. Read the file "examples/context.md" for additional background.
+5. Fetch https://api.github.com/repos/microsoft/TypeScript and report the
+   current star count.
 
 Write a concise 3-paragraph summary covering:
   - What TypeScript strict mode is and its main benefits
-  - Adoption trends from your search results
+  - Adoption trends from your search results and the GitHub star count
   - The calculated headcount, with working shown
 `.trim();
 
@@ -64,7 +67,8 @@ async function main(): Promise<void> {
   const registry = new ToolRegistry()
     .register(webSearchTool)
     .register(calculatorTool)
-    .register(fileReaderTool);
+    .register(fileReaderTool)
+    .register(fetchTool);
 
   // --dry-run: print the task and registered tools without calling the API.
   // Works without any credentials - useful for inspecting the agent setup.
