@@ -31,6 +31,7 @@ export {
 export { calculatorTool } from "./tools/calculator.js";
 export { webSearchTool } from "./tools/web-search.js";
 export { fileReaderTool } from "./tools/file-reader.js";
+export { fetchTool } from "./tools/fetch.js";
 
 // Observability
 export { createLogger, type Logger } from "./observability/logger.js";
