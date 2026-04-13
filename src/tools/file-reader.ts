@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { readFile, stat } from "node:fs/promises";
-import { resolve, relative, normalize } from "node:path";
+import { resolve, relative, normalize, isAbsolute } from "node:path";
 import type { ToolDefinition } from "../types/index.js";
 
 const inputSchema = z.object({
@@ -61,10 +61,16 @@ export const fileReaderTool: ToolDefinition<typeof inputSchema, typeof outputSch
     const slice = truncated ? buffer.subarray(0, limitBytes) : buffer;
     const content = encoding === "base64" ? slice.toString("base64") : slice.toString("utf-8");
 
-    return {
-      content: truncated
+    // For base64, appending the truncation marker to the encoded payload
+    // corrupts the base64 stream and makes it non-decodable. The marker
+    // belongs in the content only for utf-8 text output.
+    const contentWithMarker =
+      truncated && encoding !== "base64"
         ? content + `\n\n[... file truncated after ${String(limitBytes)} bytes ...]`
-        : content,
+        : content;
+
+    return {
+      content: contentWithMarker,
       path: rawPath,
       sizeBytes: fileStat.size,
       truncated,
@@ -98,7 +104,9 @@ function validatePath(rawPath: string): string {
   const cwd = process.cwd();
   const normalized = normalize(rawPath);
 
-  if (normalized.startsWith("/") || /^[A-Za-z]:\\/.test(normalized)) {
+  // path.isAbsolute catches Unix (/foo), Windows drive-letter (C:\foo),
+  // and Windows UNC paths (\\server\share) which the previous regex missed.
+  if (isAbsolute(normalized)) {
     throw new Error(`Absolute paths are not permitted: "${rawPath}"`);
   }
 
