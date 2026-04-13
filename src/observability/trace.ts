@@ -74,14 +74,24 @@ function renderStep(step: AgentStep, isLast: boolean, registry: ToolRegistry | u
 
   // Build a set of call IDs that ran in a level with siblings, for the
   // [parallel] annotation. A call is parallel if its level has >1 member.
+  //
+  // We resolve tool names → call IDs level by level, consuming each matched
+  // call exactly once (via a remaining-calls list per level). This prevents
+  // a tool called in multiple levels from having its sequential calls
+  // incorrectly marked [parallel] because the same name appears in a
+  // parallel level elsewhere in the same step.
   const parallelCallIds = new Set<string>();
   for (const level of step.parallelLevels) {
     if (level.length > 1) {
-      // Find the call IDs for tool names in this level. There may be
-      // multiple calls to the same tool name - mark all of them.
+      // Track which calls have already been assigned to an earlier level
+      // so duplicate tool names across levels don't bleed into each other.
+      const remaining = [...step.toolCalls];
       for (const toolName of level) {
-        for (const call of step.toolCalls) {
-          if (call.toolName === toolName) parallelCallIds.add(call.id);
+        const idx = remaining.findIndex((c) => c.toolName === toolName);
+        if (idx !== -1) {
+          const matched = remaining[idx];
+          if (matched !== undefined) parallelCallIds.add(matched.id);
+          remaining.splice(idx, 1);
         }
       }
     }

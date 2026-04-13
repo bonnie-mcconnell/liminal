@@ -27,9 +27,18 @@ export interface Logger {
   child(context: Record<string, unknown>): Logger;
 }
 
+const VALID_LEVELS = new Set<string>(["debug", "info", "warn", "error"]);
+
 function minLevel(): LogLevel {
   // Read per-emit so callers can change LOG_LEVEL without reloading the module.
-  return (process.env["LOG_LEVEL"] as LogLevel | undefined) ?? "info";
+  // Validate against known levels: an unknown value (e.g. "verbose") would
+  // produce undefined in the LEVELS lookup, making the comparison always false
+  // and logging every message regardless of level. Default to "info" instead.
+  const env = process.env["LOG_LEVEL"];
+  if (env !== undefined && VALID_LEVELS.has(env)) {
+    return env as LogLevel;
+  }
+  return "info";
 }
 
 function emit(record: LogEvent): void {
