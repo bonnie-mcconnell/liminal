@@ -2,20 +2,21 @@
 
 ![CI](https://github.com/bonnie-mcconnell/liminal/actions/workflows/ci.yml/badge.svg)
 
-Tool-use orchestration for the Anthropic API. 256 tests. Three runtime dependencies: the Anthropic SDK, Zod, and zod-to-json-schema.
+Tool-use orchestration for the Anthropic API. 276 tests. Three runtime dependencies: the Anthropic SDK, Zod, and zod-to-json-schema.
 
 ```
-Run run_4a9f2b1c8d3e  ·  3.42s  ·  2,841 tokens
+Run run_4a9f2b1c8d3e  ·  4.18s  ·  3,204 tokens
 ├─ Step 1  381ms  ·  280 tokens  ·  3 calls (2 levels)
 │  ├─ web_search("typescript strict mode benefits")  →  success  312ms  [parallel]
 │  ├─ web_search("typescript adoption statistics")  →  success  298ms  [parallel]
 │  └─ calculator("500 * 0.62 * 0.40")  →  cache hit  0ms
-├─ Step 2  1,203ms  ·  180 tokens  ·  1 call
-│  └─ file_reader("examples/context.md")  →  success  4ms
+├─ Step 2  1,203ms  ·  180 tokens  ·  2 calls (2 levels)
+│  ├─ file_reader("examples/context.md")  →  success  4ms  [parallel]
+│  └─ fetch("GET https://api.github.com/repos/microsoft/TypeScript")  →  success  891ms  [parallel]
 └─ Final answer  (487 tokens out)
 ```
 
-The two web searches ran in parallel. The calculator hit the cache from an earlier call. Step 2 waited for step 1. None of this required configuration - it falls out of the scheduler and executor design.
+The two web searches ran in parallel. The calculator hit the cache from an earlier call. Step 2 ran the file read and HTTP fetch concurrently. None of this required configuration - it falls out of the scheduler and executor design.
 
 ## Why I built this
 
@@ -79,6 +80,8 @@ The `toolDependencies` graph is declared statically on the agent, not per-call. 
 
 The `Cache` interface's `set()` takes `maxEntries` on every write, but the capacity is only applied on the first write per tool - subsequent writes with different values are silently ignored. This is documented in the interface but it's a footgun. A cleaner design would lock capacity at tool registration time through the registry.
 
+Timeouts use `Promise.race` rather than cooperative cancellation. The timed-out tool continues running in the background until it settles — for read-only tools this is wasteful; for mutating tools it can cause duplicate side effects on retry. True cancellation would require `execute` to accept an `AbortSignal`, which would be an API-breaking change.
+
 I also didn't implement streaming. `ToolExecutor.execute` awaits the complete result before returning. The `ToolEvent` stream already delivers per-attempt progress; true streaming would require `execute` to return an `AsyncIterable<ToolEvent>` where `succeeded` is the terminal event.
 
 ## Installation
@@ -106,10 +109,12 @@ npm run build
 
 ## Quick start
 
-Run `npm run build` first, or import from `"./src/index.js"` for local development.
-
 ```typescript
-import { Agent, ToolRegistry, calculatorTool, webSearchTool } from "liminal";
+// When using as a library (after npm install liminal):
+import { Agent, ToolRegistry, calculatorTool, webSearchTool, renderTrace } from "liminal";
+
+// When working in this repo directly, import from source instead:
+// import { ... } from "./src/index.js";
 
 const registry = new ToolRegistry().register(calculatorTool).register(webSearchTool);
 
@@ -125,10 +130,22 @@ const result = await agent.run(
 
 if (result.status === "success") {
   console.log(result.output);
+  console.log(renderTrace(result.trace)); // prints the execution tree
 }
 ```
 
-> **Local development (before publishing):** import from `"./src/index.js"` instead.
+## Built-in tools
+
+Four tools ship with the library. Register whichever ones your agent needs:
+
+| Tool | What it does | Caching |
+|---|---|---|
+| `calculatorTool` | Evaluates math expressions via a recursive-descent parser — no `eval()` | Content-hash, 24h TTL |
+| `webSearchTool` | Web search via the Brave API (labeled mock results when no API key is set) | Content-hash, 10min TTL |
+| `fileReaderTool` | Reads files relative to cwd — rejects absolute paths and directory traversal | Content-hash, 30s TTL |
+| `fetchTool` | HTTP requests (GET/POST/PUT/PATCH/DELETE/HEAD) with body truncation | No-cache (side effects) |
+
+All four are exported from `"liminal"` and follow the same `ToolDefinition` interface, so you can use them as-is or as reference implementations for your own tools.
 
 ## Tool dependencies
 
@@ -154,6 +171,39 @@ The execution plan is recorded on every `AgentStep` as `parallelLevels`:
 // result.trace.steps[0].parallelLevels
 // → [["web_search"], ["summarise_results"], ["analyse_data"]]
 ```
+
+## Concurrency control
+
+By default, all independent tool calls in a level run simultaneously. Use `maxConcurrency` to cap parallel execution — useful when your tools hit rate-limited APIs or you need to control resource usage:
+
+```typescript
+const agent = new Agent(registry, {
+  model: "claude-opus-4-6",
+  maxConcurrency: 2, // at most 2 tool calls running at once
+});
+```
+
+With `maxConcurrency: 2` and 4 independent calls, the first two start immediately and the next two start as slots open. The scheduler still groups calls into dependency levels — `maxConcurrency` limits throughput within each level, not across levels.
+
+## HTTP fetch tool
+
+The built-in `fetchTool` makes HTTP requests and returns the response status, headers, and body:
+
+```typescript
+import { Agent, ToolRegistry, fetchTool } from "liminal";
+
+const agent = new Agent(
+  new ToolRegistry().register(fetchTool),
+  { model: "claude-opus-4-6" },
+);
+
+const result = await agent.run(
+  "Fetch https://api.github.com/repos/anthropics/anthropic-sdk-typescript " +
+  "and tell me the open issue count and star count."
+);
+```
+
+The tool handles response body truncation, charset detection from `Content-Type`, and retries on transient network errors (`TypeError`, `ECONNRESET`). POST/PUT/PATCH bodies are passed as strings — JSON.stringify before passing. Responses are not cached because HTTP side effects must always fire.
 
 ## Live event stream
 
@@ -281,7 +331,7 @@ Every significant event is written as newline-delimited JSON:
 
 ## Tests
 
-256 tests across 14 files.
+276 tests across 15 files.
 
 ```bash
 npm test               # unit + integration
@@ -317,12 +367,12 @@ npm run demo
 src/
 ├── core/          agent, executor, registry, scheduler, cache, lru, defaults
 ├── errors/        typed error hierarchy (LiminalError subclasses)
-├── tools/         calculator, web_search, file_reader
+├── tools/         calculator, web_search, file_reader, fetch
 ├── observability/ logger (NDJSON), trace renderer, EventEmitter
 ├── types/         ToolDefinition, AgentResult, ExecutionTrace, ToolEvent, policies
 └── index.ts       public API - everything not exported here is an internal detail
 
 tests/
-├── unit/          one file per source module (13 suites)
+├── unit/          one file per source module (14 suites)
 └── integration/   full agent loop with deterministic mock Anthropic client
 ```
