@@ -56,7 +56,7 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
     const init: RequestInit = {
       method,
       headers: {
-        "User-Agent": "liminal/0.2.0",
+        "User-Agent": "liminal/0.3.0",
         ...headers,
       },
     };
