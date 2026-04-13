@@ -279,15 +279,15 @@ describe("renderTrace", () => {
       const step = makeStep(
         0,
         [
-          successResult("web_search", "c1"), // level 0 — alone, not parallel
-          successResult("web_search", "c2"), // level 1 — parallel with calculator
-          successResult("calculator", "c3"), // level 1 — parallel with web_search
+          successResult("web_search", "c1"), // level 0 - alone, not parallel
+          successResult("web_search", "c2"), // level 1 - parallel with calculator
+          successResult("calculator", "c3"), // level 1 - parallel with web_search
         ],
         { parallelLevels: [["web_search"], ["web_search", "calculator"]] },
       );
       const output = renderTrace(makeTrace([step, finalStep(1)]));
       const toolLines = output.split("\n").filter((l) => l.includes("→"));
-      // Exactly 2 of the 3 tool lines must carry [parallel] — not all 3.
+      // Exactly 2 of the 3 tool lines must carry [parallel] - not all 3.
       const parallelCount = toolLines.filter((l) => l.includes("[parallel]")).length;
       expect(parallelCount).toBe(2);
       // And at least one tool line must NOT have [parallel] (the sequential web_search).

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchTool } from "../../src/tools/fetch.js";
 
 // ---------------------------------------------------------------------------
-// Mock the global fetch using arrayBuffer() — matches the tool implementation
+// Mock the global fetch using arrayBuffer() - matches the tool implementation
 // ---------------------------------------------------------------------------
 
 function mockFetch(

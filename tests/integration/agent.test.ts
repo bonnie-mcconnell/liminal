@@ -203,7 +203,7 @@ describe("Agent - integration", () => {
 
   describe("maxConcurrency", () => {
     it("limits simultaneous tool calls within a level", async () => {
-      // 4 independent tools, maxConcurrency: 2 — at most 2 should run at once.
+      // 4 independent tools, maxConcurrency: 2 - at most 2 should run at once.
       const activeCount: number[] = []; // snapshot of active calls at each start
       let running = 0;
 

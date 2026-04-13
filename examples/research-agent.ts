@@ -3,7 +3,7 @@
  * Multi-step research agent that exercises every subsystem.
  *
  * Step 1: two web_search calls + calculator run in parallel (3 independent calls,
- *         one level — the scheduler dispatches all three simultaneously).
+ *         one level - the scheduler dispatches all three simultaneously).
  * Step 2: file_reader + fetchTool run in parallel (reading a local context file
  *         and fetching the TypeScript GitHub repo stats concurrently).
  * Final:  the model synthesises everything into a 3-paragraph summary.

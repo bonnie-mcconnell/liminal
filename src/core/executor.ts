@@ -175,7 +175,7 @@ export class ToolExecutor {
         try {
           willRetry = policy.retry.shouldRetry(err, attempt) && attempt < policy.retry.maxAttempts;
         } catch {
-          // Treat a crashing shouldRetry as "don't retry" — conservative and safe.
+          // Treat a crashing shouldRetry as "don't retry" - conservative and safe.
           willRetry = false;
         }
         this.emit({

@@ -367,7 +367,7 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
  * (same behaviour as Promise.allSettled). When `limit` < tasks.length, tasks
  * are dispatched in order; a new task starts as soon as a running slot opens.
  *
- * Like Promise.allSettled, this never rejects — individual task rejections
+ * Like Promise.allSettled, this never rejects - individual task rejections
  * are captured in the returned PromiseSettledResult array.
  */
 async function allSettledConcurrent<T>(

@@ -164,7 +164,7 @@ describe("createLogger", () => {
       const log = createLogger("run_x");
       const debugLines = captureOutput(() => log.debug("debug.event"));
       const infoLines = captureOutput(() => log.info("info.event"));
-      expect(debugLines).toHaveLength(0); // debug suppressed — not all-logging
+      expect(debugLines).toHaveLength(0); // debug suppressed - not all-logging
       expect(infoLines).toHaveLength(1); // info passes through (info fallback)
     });
   });

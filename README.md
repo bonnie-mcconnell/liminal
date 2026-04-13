@@ -80,7 +80,7 @@ The `toolDependencies` graph is declared statically on the agent, not per-call. 
 
 The `Cache` interface's `set()` takes `maxEntries` on every write, but the capacity is only applied on the first write per tool - subsequent writes with different values are silently ignored. This is documented in the interface but it's a footgun. A cleaner design would lock capacity at tool registration time through the registry.
 
-Timeouts use `Promise.race` rather than cooperative cancellation. The timed-out tool continues running in the background until it settles — for read-only tools this is wasteful; for mutating tools it can cause duplicate side effects on retry. True cancellation would require `execute` to accept an `AbortSignal`, which would be an API-breaking change.
+Timeouts use `Promise.race` rather than cooperative cancellation. The timed-out tool continues running in the background until it settles - for read-only tools this is wasteful; for mutating tools it can cause duplicate side effects on retry. True cancellation would require `execute` to accept an `AbortSignal`, which would be an API-breaking change.
 
 I also didn't implement streaming. `ToolExecutor.execute` awaits the complete result before returning. The `ToolEvent` stream already delivers per-attempt progress; true streaming would require `execute` to return an `AsyncIterable<ToolEvent>` where `succeeded` is the terminal event.
 
@@ -110,11 +110,11 @@ npm run build
 ## Quick start
 
 ```typescript
-// When using as a library (after npm install liminal):
-import { Agent, ToolRegistry, calculatorTool, webSearchTool, renderTrace } from "liminal";
+// Clone and run from this repo - no build step needed:
+// git clone https://github.com/bonnie-mcconnell/liminal.git && cd liminal && npm install
+import { Agent, ToolRegistry, calculatorTool, webSearchTool, renderTrace } from "../src/index.js";
 
-// When working in this repo directly, import from source instead:
-// import { ... } from "./src/index.js";
+// If published to npm: import { ... } from "liminal";
 
 const registry = new ToolRegistry().register(calculatorTool).register(webSearchTool);
 
@@ -140,9 +140,9 @@ Four tools ship with the library. Register whichever ones your agent needs:
 
 | Tool | What it does | Caching |
 |---|---|---|
-| `calculatorTool` | Evaluates math expressions via a recursive-descent parser — no `eval()` | Content-hash, 24h TTL |
+| `calculatorTool` | Evaluates math expressions via a recursive-descent parser - no `eval()` | Content-hash, 24h TTL |
 | `webSearchTool` | Web search via the Brave API (labeled mock results when no API key is set) | Content-hash, 10min TTL |
-| `fileReaderTool` | Reads files relative to cwd — rejects absolute paths and directory traversal | Content-hash, 30s TTL |
+| `fileReaderTool` | Reads files relative to cwd - rejects absolute paths and directory traversal | Content-hash, 30s TTL |
 | `fetchTool` | HTTP requests (GET/POST/PUT/PATCH/DELETE/HEAD) with body truncation | No-cache (side effects) |
 
 All four are exported from `"liminal"` and follow the same `ToolDefinition` interface, so you can use them as-is or as reference implementations for your own tools.
@@ -174,7 +174,7 @@ The execution plan is recorded on every `AgentStep` as `parallelLevels`:
 
 ## Concurrency control
 
-By default, all independent tool calls in a level run simultaneously. Use `maxConcurrency` to cap parallel execution — useful when your tools hit rate-limited APIs or you need to control resource usage:
+By default, all independent tool calls in a level run simultaneously. Use `maxConcurrency` to cap parallel execution - useful when your tools hit rate-limited APIs or you need to control resource usage:
 
 ```typescript
 const agent = new Agent(registry, {
@@ -183,7 +183,7 @@ const agent = new Agent(registry, {
 });
 ```
 
-With `maxConcurrency: 2` and 4 independent calls, the first two start immediately and the next two start as slots open. The scheduler still groups calls into dependency levels — `maxConcurrency` limits throughput within each level, not across levels.
+With `maxConcurrency: 2` and 4 independent calls, the first two start immediately and the next two start as slots open. The scheduler still groups calls into dependency levels - `maxConcurrency` limits throughput within each level, not across levels.
 
 ## HTTP fetch tool
 
@@ -203,7 +203,7 @@ const result = await agent.run(
 );
 ```
 
-The tool handles response body truncation, charset detection from `Content-Type`, and retries on transient network errors (`TypeError`, `ECONNRESET`). POST/PUT/PATCH bodies are passed as strings — JSON.stringify before passing. Responses are not cached because HTTP side effects must always fire.
+The tool handles response body truncation, charset detection from `Content-Type`, and retries on transient network errors (`TypeError`, `ECONNRESET`). POST/PUT/PATCH bodies are passed as strings - JSON.stringify before passing. Responses are not cached because HTTP side effects must always fire.
 
 ## Live event stream
 

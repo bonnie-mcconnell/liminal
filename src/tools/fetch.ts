@@ -40,7 +40,7 @@ const outputSchema = z.object({
  * Body is always returned as a string. For JSON APIs, the model can parse
  * the body directly. For HTML pages, the model receives the raw markup.
  *
- * Responses larger than `maxBytes` are truncated — check the `truncated`
+ * Responses larger than `maxBytes` are truncated - check the `truncated`
  * field. The `Content-Type` header tells you how to interpret the body.
  */
 export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> = {
@@ -49,7 +49,7 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
     "Makes an HTTP request and returns the response status, headers, and body. " +
     "Use for REST APIs, fetching web pages, or checking URLs. " +
     "Not for file system operations (use file_reader for that). " +
-    "Returns the raw body as a string — for JSON, the model can parse it.",
+    "Returns the raw body as a string - for JSON, the model can parse it.",
   inputSchema,
   outputSchema,
   execute: async ({ url, method, headers, body, maxBytes }) => {
@@ -70,7 +70,7 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
     });
 
     // Read the full body as an ArrayBuffer then slice to maxBytes.
-    // arrayBuffer() buffers the entire response — for truly large responses
+    // arrayBuffer() buffers the entire response - for truly large responses
     // this is wasteful, but it avoids the any-typed ReadableStream reader API
     // and is correct for the tool's contract (maxBytes default: 500 KB).
     // Callers that need true streaming should use the Fetch API directly.
@@ -103,7 +103,7 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
   policy: {
     cache: {
       // No caching for HTTP requests. Caching by input hash would mean two
-      // identical POST requests share a result — the second wouldn't fire,
+      // identical POST requests share a result - the second wouldn't fire,
       // silently skipping its side effect. HTTP-level caching (ETags,
       // Cache-Control) is the right layer for this; tool-level caching is not.
       strategy: "no-cache",

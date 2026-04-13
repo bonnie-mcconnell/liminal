@@ -1,6 +1,6 @@
 {
   "name": "liminal",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tool-use orchestration for the Anthropic API - typed errors, SHA-256 content-hash caching, DAG scheduling, typed event stream, and structured observability.",
   "keywords": [
     "llm",
