@@ -2,10 +2,15 @@
 /**
  * Multi-step research agent that exercises every subsystem.
  *
- * Step 1: two web_search calls + calculator run in parallel.
- * Step 2: file_reader (depends on nothing, but the model typically calls it
- *         after seeing the search results).
- * Final:  the model synthesises everything into a summary.
+ * Step 1: two web_search calls + calculator run in parallel (3 independent calls,
+ *         one level — the scheduler dispatches all three simultaneously).
+ * Step 2: file_reader + fetchTool run in parallel (reading a local context file
+ *         and fetching the TypeScript GitHub repo stats concurrently).
+ * Final:  the model synthesises everything into a 3-paragraph summary.
+ *
+ * Tools used: web_search, calculator, file_reader, fetch
+ * Demonstrates: parallel scheduling, content-hash caching, live event stream,
+ *               renderTrace output, structured error handling.
  *
  * Usage:
  *   npx tsx examples/research-agent.ts
