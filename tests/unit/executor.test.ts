@@ -405,6 +405,44 @@ describe("ToolExecutor", () => {
   });
 
   describe("never throws", () => {
+    it("returns an error result when shouldRetry itself throws", async () => {
+      // If a custom policy's shouldRetry function throws, that must not
+      // propagate out of execute() — it would break the never-throws contract.
+      // The fix: wrap shouldRetry in try/catch and treat a crash as "don't retry".
+      const registry = new ToolRegistry();
+      registry.register({
+        name: "bad_policy",
+        description: "test",
+        inputSchema: z.object({ value: z.number() }),
+        outputSchema: z.object({ result: z.number() }),
+        execute: async () => {
+          throw new Error("tool failed");
+        },
+        policy: {
+          timeoutMs: 1000,
+          retry: {
+            maxAttempts: 3,
+            backoff: "none",
+            baseDelayMs: 0,
+            maxDelayMs: 0,
+            jitterMs: 0,
+            shouldRetry: () => {
+              throw new Error("policy exploded");
+            },
+          },
+          cache: { strategy: "no-cache" },
+        },
+      });
+      const executor = new ToolExecutor(registry, new ResultCache(), createLogger("test"));
+      // Must not throw — must return a ToolResult with status: "error"
+      const result = await executor.execute({
+        id: "c1",
+        toolName: "bad_policy",
+        rawInput: { value: 1 },
+      });
+      expect(result.status).toBe("error");
+    });
+
     it("returns an error result when the tool throws synchronously", async () => {
       const registry = new ToolRegistry();
       registry.register({

@@ -201,6 +201,111 @@ describe("Agent - integration", () => {
     });
   });
 
+  describe("maxConcurrency", () => {
+    it("limits simultaneous tool calls within a level", async () => {
+      // 4 independent tools, maxConcurrency: 2 — at most 2 should run at once.
+      const activeCount: number[] = []; // snapshot of active calls at each start
+      let running = 0;
+
+      const makeTool = (name: string): ToolDefinition => ({
+        name,
+        description: "test",
+        inputSchema: z.object({ value: z.string() }),
+        outputSchema: z.object({ echoed: z.string() }),
+        execute: async ({ value }: { value: string }) => {
+          running++;
+          activeCount.push(running);
+          await new Promise((r) => setTimeout(r, 20));
+          running--;
+          return { echoed: value };
+        },
+        policy: {
+          timeoutMs: 5_000,
+          retry: {
+            maxAttempts: 1,
+            backoff: "none",
+            baseDelayMs: 0,
+            maxDelayMs: 0,
+            jitterMs: 0,
+            shouldRetry: () => false,
+          },
+          cache: { strategy: "no-cache" },
+        },
+      });
+
+      setResponses([
+        toolResponse([
+          { id: "c1", name: "tool_a", input: { value: "a" } },
+          { id: "c2", name: "tool_b", input: { value: "b" } },
+          { id: "c3", name: "tool_c", input: { value: "c" } },
+          { id: "c4", name: "tool_d", input: { value: "d" } },
+        ]),
+        textResponse("Done."),
+      ]);
+
+      const registry = new ToolRegistry()
+        .register(makeTool("tool_a"))
+        .register(makeTool("tool_b"))
+        .register(makeTool("tool_c"))
+        .register(makeTool("tool_d"));
+
+      await new Agent(registry, { model: MODEL, maxConcurrency: 2 }).run("Run all.");
+
+      // With maxConcurrency: 2, active count should never exceed 2
+      expect(Math.max(...activeCount)).toBeLessThanOrEqual(2);
+    });
+
+    it("runs all calls concurrently when maxConcurrency is not set", async () => {
+      const activeCount: number[] = [];
+      let running = 0;
+
+      const makeTool = (name: string): ToolDefinition => ({
+        name,
+        description: "test",
+        inputSchema: z.object({ value: z.string() }),
+        outputSchema: z.object({ echoed: z.string() }),
+        execute: async ({ value }: { value: string }) => {
+          running++;
+          activeCount.push(running);
+          await new Promise((r) => setTimeout(r, 20));
+          running--;
+          return { echoed: value };
+        },
+        policy: {
+          timeoutMs: 5_000,
+          retry: {
+            maxAttempts: 1,
+            backoff: "none",
+            baseDelayMs: 0,
+            maxDelayMs: 0,
+            jitterMs: 0,
+            shouldRetry: () => false,
+          },
+          cache: { strategy: "no-cache" },
+        },
+      });
+
+      setResponses([
+        toolResponse([
+          { id: "c1", name: "tool_a", input: { value: "a" } },
+          { id: "c2", name: "tool_b", input: { value: "b" } },
+          { id: "c3", name: "tool_c", input: { value: "c" } },
+        ]),
+        textResponse("Done."),
+      ]);
+
+      const registry = new ToolRegistry()
+        .register(makeTool("tool_a"))
+        .register(makeTool("tool_b"))
+        .register(makeTool("tool_c"));
+
+      await new Agent(registry, { model: MODEL }).run("Run all.");
+
+      // Without maxConcurrency, all 3 start simultaneously
+      expect(Math.max(...activeCount)).toBe(3);
+    });
+  });
+
   describe("tool error recovery", () => {
     it("surfaces a ToolNotFoundError to the model and continues to a final answer", async () => {
       setResponses([
