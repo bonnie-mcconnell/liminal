@@ -33,7 +33,8 @@ src/
 ├── tools/
 │   ├── calculator.ts     - recursive-descent parser, no eval()
 │   ├── web-search.ts     - Brave API + [Mock] fallback
-│   └── file-reader.ts    - path sandboxing, traversal rejection
+│   ├── file-reader.ts    - path sandboxing, traversal rejection
+│   └── fetch.ts          - HTTP requests, body truncation, no-cache policy
 ├── types/
 │   ├── tool.ts           - ToolDefinition, CachePolicy (discriminated union)
 │   ├── agent.ts          - AgentConfig, AgentStep, AgentResult
@@ -41,7 +42,7 @@ src/
 └── index.ts              - public API surface
 
 tests/
-├── unit/                 - one file per source module (13 suites, 14 total with integration)
+├── unit/                 - one file per source module (14 suites, 15 total with integration)
 └── integration/          - full agent loop with deterministic mock SDK
 ```
 
@@ -57,6 +58,8 @@ tests/
   per-turn.
 - **Events are a synchronous side-channel.** onEvent does not affect the return
   value, timing, or error handling of the executor.
+- **`maxConcurrency` limits parallelism within a level**, not across levels. Calls
+  drain in dispatch order via a bounded worker pool.
 
 ## Development commands
 

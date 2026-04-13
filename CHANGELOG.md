@@ -2,7 +2,35 @@
 
 All notable changes to this project are documented here.
 
-## [0.2.0] - 2025-02-15
+## [0.3.0] - 2026-04-13
+
+### Added
+- **`fetchTool`** - built-in HTTP tool (GET/POST/PUT/PATCH/DELETE/HEAD) with body
+  truncation, charset detection, and retry on transient network errors. Responses are
+  not cached: HTTP-level caching (ETags, Cache-Control) is the correct layer, not
+  input-hash caching that would silently swallow POST side effects.
+- **`maxConcurrency`** on `AgentConfig` - caps simultaneous tool calls within a
+  scheduler level. Uses a bounded worker pool so calls drain in dispatch order.
+  Defaults to unlimited (existing behaviour unchanged).
+- **`renderTrace`** highlighted in Quick Start - the execution tree output is now
+  shown in the first code example a reader sees.
+
+### Fixed
+- `shouldRetry` throwing inside the retry loop no longer breaks the `ToolExecutor`
+  never-throws contract. A crashing policy function is now treated as "don't retry".
+- Windows UNC paths (`\\server\share\file`) bypassed the `file_reader` sandbox.
+  Replaced the drive-letter regex with `path.isAbsolute()` which catches all three
+  absolute-path forms (Unix, Windows drive, UNC).
+- Appending the truncation marker to a base64-encoded body corrupted the payload.
+  The marker is now only appended for `utf-8` responses.
+- Trace parallel annotation incorrectly marked sequential calls `[parallel]` when
+  the same tool name appeared in both a sequential and a parallel level. Fixed by
+  consuming calls level-by-level rather than scanning by name globally.
+- Unknown `LOG_LEVEL` values (e.g. `verbose`) previously produced `undefined` in
+  the numeric level lookup, making the comparison always false and logging
+  everything. Unknown values now fall back to `info`.
+
+## [0.2.0] - 2026-04-11
 
 ### Added
 - **Tool dependency scheduling** - declare `toolDependencies` on `AgentConfig` to impose execution order within a turn. Independent calls still run concurrently; declared dependencies are resolved per-turn by Kahn's algorithm and recorded as `parallelLevels` on `AgentStep`.
@@ -19,7 +47,7 @@ All notable changes to this project are documented here.
 ### Fixed
 - `CyclicDependencyError` thrown by the scheduler is now caught and returned as a structured `AgentResult` rather than rejecting the `run()` promise.
 
-## [0.1.0] - 2025-01-20
+## [0.1.0] - 2026-03-10
 
 Initial release.
 
