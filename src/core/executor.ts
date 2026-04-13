@@ -169,8 +169,15 @@ export class ToolExecutor {
         }
       } catch (err) {
         lastError = err;
-        const willRetry =
-          policy.retry.shouldRetry(err, attempt) && attempt < policy.retry.maxAttempts;
+        // Wrap shouldRetry in try/catch: a buggy policy function must not
+        // propagate out of execute() and break the never-throws contract.
+        let willRetry = false;
+        try {
+          willRetry = policy.retry.shouldRetry(err, attempt) && attempt < policy.retry.maxAttempts;
+        } catch {
+          // Treat a crashing shouldRetry as "don't retry" — conservative and safe.
+          willRetry = false;
+        }
         this.emit({
           type: "attempt_failed",
           callId: call.id,

@@ -29,6 +29,7 @@ import {
 const DEFAULT_CONFIG: Omit<AgentConfig, "model"> = {
   maxIterations: 20,
   budget: {},
+  // maxConcurrency defaults to undefined (unlimited)
 };
 
 /**
@@ -228,7 +229,10 @@ export class Agent {
       const toolResults: ToolResult[] = [];
 
       for (const level of levels) {
-        const settled = await Promise.allSettled(level.map((call) => executor.execute(call)));
+        const settled = await allSettledConcurrent(
+          level.map((call) => () => executor.execute(call)),
+          this.config.maxConcurrency,
+        );
         for (const result of settled) {
           if (result.status === "fulfilled") {
             toolResults.push(result.value);
@@ -355,6 +359,52 @@ function resolveScheduledCalls(
 // ---------------------------------------------------------------------------
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/**
+ * Executes `tasks` with at most `limit` running concurrently.
+ *
+ * When `limit` is undefined or >= tasks.length, all tasks run simultaneously
+ * (same behaviour as Promise.allSettled). When `limit` < tasks.length, tasks
+ * are dispatched in order; a new task starts as soon as a running slot opens.
+ *
+ * Like Promise.allSettled, this never rejects — individual task rejections
+ * are captured in the returned PromiseSettledResult array.
+ */
+async function allSettledConcurrent<T>(
+  tasks: readonly (() => Promise<T>)[],
+  limit: number | undefined,
+): Promise<PromiseSettledResult<T>[]> {
+  if (limit === undefined || limit >= tasks.length) {
+    return Promise.allSettled(tasks.map((t) => t()));
+  }
+
+  // Pre-fill with a typed placeholder so the array element type is known.
+  const results: PromiseSettledResult<T>[] = Array.from(
+    { length: tasks.length },
+    (): PromiseSettledResult<T> => ({ status: "rejected", reason: undefined }),
+  );
+  let nextIndex = 0;
+
+  async function runNext(): Promise<void> {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex++;
+      // tasks[index] is always defined here: the while guard ensures
+      // index < tasks.length, but noUncheckedIndexedAccess requires explicit
+      // handling. We use a local variable and check for undefined defensively.
+      const task = tasks[index];
+      if (task === undefined) break;
+      try {
+        results[index] = { status: "fulfilled", value: await task() };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  // Start `limit` concurrent workers; each drains from the shared nextIndex.
+  await Promise.all(Array.from({ length: limit }, runNext));
+  return results;
+}
 
 /**
  * Generates a unique run identifier backed by the OS CSPRNG.
