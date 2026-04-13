@@ -46,6 +46,28 @@ export interface AgentConfig {
    * `CyclicDependencyError` immediately.
    */
   readonly toolDependencies?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Maximum number of tool calls that may execute simultaneously within a
+   * single scheduler level. Defaults to unlimited (all independent calls
+   * in a level run concurrently).
+   *
+   * Use this when your tools hit rate-limited APIs or you want to cap
+   * resource usage. For example, `maxConcurrency: 2` means at most 2 tool
+   * calls run at once even if the scheduler groups 5 into one level.
+   *
+   * Calls within a level are still dispatched in the order the scheduler
+   * produces them; excess calls wait for a slot to open before starting.
+   *
+   * @example
+   * ```ts
+   * // Cap at 2 parallel tool calls even when more are independent
+   * const agent = new Agent(registry, {
+   *   model: "claude-opus-4-6",
+   *   maxConcurrency: 2,
+   * });
+   * ```
+   */
+  readonly maxConcurrency?: number;
 }
 
 export interface TokenUsage {
