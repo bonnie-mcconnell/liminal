@@ -62,7 +62,7 @@ tests/
 
 ```bash
 npm install          # install dependencies
-npm test             # run all 256 tests
+npm test             # run all 276 tests
 npm run typecheck    # tsc --noEmit (includes tests and examples)
 npm run lint         # ESLint strict-type-checked
 npm run format       # Prettier (write)
