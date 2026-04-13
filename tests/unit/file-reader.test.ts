@@ -66,4 +66,37 @@ describe("fileReaderTool", () => {
   it("rejects a directory path", async () => {
     await expect(read(".test-tmp-file-reader")).rejects.toThrow(/not a file/);
   });
+
+  it("rejects Windows UNC paths on Windows (\\\\server\\share\\file)", async () => {
+    // On Windows, UNC paths (\\server\share\file) are absolute — path.isAbsolute()
+    // returns true for them, so our fix catches them. On Linux, backslashes have
+    // no special meaning and the same string is treated as a relative path, which
+    // resolves inside cwd and fails at the filesystem level (file not found).
+    // Either way, the path cannot be used to escape the sandbox.
+    if (process.platform === "win32") {
+      await expect(read("\\\\server\\share\\secret.txt")).rejects.toThrow(/Absolute paths/);
+    } else {
+      // On Linux: resolves inside cwd, no file with that name exists
+      await expect(read("\\\\server\\share\\secret.txt")).rejects.toThrow(
+        /not found|inaccessible|traversal|Absolute/,
+      );
+    }
+  });
+
+  it("does not corrupt base64 output when the file is truncated", async () => {
+    // Appending the truncation marker to a base64-encoded payload corrupts it —
+    // the marker bytes get interpreted as base64 data during decoding.
+    // When encoding is base64, the content must be a valid base64 string.
+    const result = await read(".test-tmp-file-reader/big.txt", {
+      maxBytes: 50,
+      encoding: "base64",
+    });
+    expect(result.truncated).toBe(true);
+    // The content must be decodable as pure base64 — no truncation marker appended.
+    expect(() => Buffer.from(result.content, "base64")).not.toThrow();
+    // And it must not contain the marker string
+    expect(result.content).not.toContain("[... file truncated");
+    // The decoded length must match the requested byte limit
+    expect(Buffer.from(result.content, "base64").length).toBe(50);
+  });
 });

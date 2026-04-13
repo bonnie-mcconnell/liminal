@@ -136,4 +136,36 @@ describe("createLogger", () => {
       expect(data["childOnly"]).toBeUndefined();
     });
   });
+
+  describe("LOG_LEVEL validation", () => {
+    it("defaults to info when LOG_LEVEL is not set", () => {
+      delete process.env["LOG_LEVEL"];
+      const log = createLogger("run_x");
+      const debugLines = captureOutput(() => log.debug("debug.event"));
+      const infoLines = captureOutput(() => log.info("info.event"));
+      expect(debugLines).toHaveLength(0); // debug suppressed at info level
+      expect(infoLines).toHaveLength(1); // info passes through
+    });
+
+    it("suppresses all levels when LOG_LEVEL=error", () => {
+      process.env["LOG_LEVEL"] = "error";
+      const log = createLogger("run_x");
+      expect(captureOutput(() => log.debug("d"))).toHaveLength(0);
+      expect(captureOutput(() => log.info("i"))).toHaveLength(0);
+      expect(captureOutput(() => log.warn("w"))).toHaveLength(0);
+      expect(captureOutput(() => log.error("e"))).toHaveLength(1);
+    });
+
+    it("falls back to info (not all-logging) when LOG_LEVEL is an unknown value", () => {
+      // Previously, an unknown level like "verbose" produced LEVELS["verbose"] = undefined,
+      // and undefined < N is false in JavaScript, so ALL messages were logged.
+      // Now we validate and fall back to "info".
+      process.env["LOG_LEVEL"] = "verbose";
+      const log = createLogger("run_x");
+      const debugLines = captureOutput(() => log.debug("debug.event"));
+      const infoLines = captureOutput(() => log.info("info.event"));
+      expect(debugLines).toHaveLength(0); // debug suppressed — not all-logging
+      expect(infoLines).toHaveLength(1); // info passes through (info fallback)
+    });
+  });
 });

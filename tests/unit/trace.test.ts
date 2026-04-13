@@ -268,6 +268,31 @@ describe("renderTrace", () => {
         .find((l) => l.includes("Step 1"))!;
       expect(stepLine).not.toContain("levels");
     });
+
+    it("does not mark a sequential call [parallel] when the same tool name appears in a later parallel level", () => {
+      // Scenario: web_search alone in level 0 (sequential),
+      // then web_search + calculator together in level 1 (parallel).
+      // Exactly 2 of the 3 calls should be marked [parallel].
+      // Before the fix, all 3 were marked [parallel] because the renderer
+      // scanned all calls with the name "web_search" without tracking which
+      // level each call actually belongs to.
+      const step = makeStep(
+        0,
+        [
+          successResult("web_search", "c1"), // level 0 — alone, not parallel
+          successResult("web_search", "c2"), // level 1 — parallel with calculator
+          successResult("calculator", "c3"), // level 1 — parallel with web_search
+        ],
+        { parallelLevels: [["web_search"], ["web_search", "calculator"]] },
+      );
+      const output = renderTrace(makeTrace([step, finalStep(1)]));
+      const toolLines = output.split("\n").filter((l) => l.includes("→"));
+      // Exactly 2 of the 3 tool lines must carry [parallel] — not all 3.
+      const parallelCount = toolLines.filter((l) => l.includes("[parallel]")).length;
+      expect(parallelCount).toBe(2);
+      // And at least one tool line must NOT have [parallel] (the sequential web_search).
+      expect(toolLines.some((l) => !l.includes("[parallel]"))).toBe(true);
+    });
   });
 
   describe("input summarization - fallback heuristic", () => {
