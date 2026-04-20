@@ -16,7 +16,7 @@ Run run_4a9f2b1c8d3e  ·  2.01s  ·  3,204 tokens
 └─ Final answer  (487 tokens out)
 ```
 
-Both web searches and the calculator ran simultaneously in step 1. The file read and HTTP fetch ran simultaneously in step 2. None of this required extra configuration - it falls out of the scheduler and executor design.
+Both web searches and the calculator ran simultaneously in step 1. The file read and HTTP fetch ran simultaneously in step 2.
 
 ## Why I built this
 
@@ -49,7 +49,7 @@ $ npm run bench
   Efficiency:           98.4% of theoretical
 ```
 
-Scheduling overhead is under 11ms. The variation in sequential times (~9ms stddev) is OS scheduler noise, not the library.
+Scheduling overhead is under 11ms. The ~9ms stddev in sequential times is OS scheduler noise on Windows, not the library.
 
 ## How it works
 
@@ -75,29 +75,23 @@ ToolExecutor (per call)
   └─ write to ResultCache
 ```
 
-**Scheduler** - Kahn's algorithm groups calls into levels. Everything in a level runs via `Promise.allSettled` - not `Promise.all`, because a failure in one call shouldn't cancel its siblings. Cycles in the dependency graph throw `CyclicDependencyError` at scheduling time rather than producing mysterious ordering at runtime.
+The scheduler groups calls into levels using Kahn's algorithm - everything in a level runs via `Promise.allSettled` (not `Promise.all`, so one failure doesn't cancel siblings), and cycles throw `CyclicDependencyError` at scheduling time rather than producing mysterious ordering at runtime.
 
-**ResultCache** - SHA-256 content-addressable: `{a:1,b:2}` and `{b:2,a:1}` hit the same entry because object keys are canonicalised (sorted recursively) before hashing. Each tool gets its own LRU store so a high-traffic tool can't evict results belonging to others. Inject a shared instance across agents to deduplicate calls across runs.
+The result cache is SHA-256 content-addressable. `{a:1,b:2}` and `{b:2,a:1}` hit the same entry because object keys are canonicalised before hashing. Each tool gets its own LRU store so a high-traffic tool can't evict results belonging to others.
 
-**ToolExecutor** - never throws. Every failure path - not found, bad input, timeout, execution error, retry exhaustion - returns a typed `ToolResult` with a machine-readable error code. The model sees the error and can reason about it: retry with different parameters, fall back to a different tool, or answer from what it already has.
+The executor never throws. Every failure path - not found, bad input, timeout, execution error, retry exhaustion - returns a typed `ToolResult` with a machine-readable error code the model can reason about.
 
 ## Design decisions
 
-**Kahn's over DFS for topological sort.** Both give a valid ordering. Kahn's cycle detection is implicit - any node with nonzero in-degree after the sweep is in a cycle. With DFS you add a separate visited-set check. The cycle detection falling out of the algorithm for free felt cleaner than bolting it on.
+The two things I spent the most time on were the scheduler and the cache key.
 
-**SHA-256 over a faster hash.** Non-cryptographic hashes (djb2, FNV) cluster on structured data like JSON - a one-character difference in a key might produce a very similar digest. SHA-256's avalanche property guarantees a one-bit input difference produces an unrecognisable digest. The 64-bit prefix gives a collision probability of ~2.7×10⁻⁸ for 10⁶ distinct inputs, which is fine for tool-call caching.
+For the scheduler, I chose Kahn's algorithm over DFS topological sort because cycle detection is implicit - any node with nonzero in-degree after the sweep is part of a cycle. DFS gives you the same ordering but requires a separate visited-set check bolted on afterwards.
 
-**Canonical input serialisation.** `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings. The same logical input would miss the cache. Sorting object keys recursively before hashing fixes this without changing the data.
+For the cache key, the non-obvious part is canonicalisation. `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings, so the same logical tool input misses the cache depending on property insertion order. Sorting object keys recursively before hashing fixes this. I use SHA-256 rather than a faster hash (djb2, FNV) because non-cryptographic hashes can cluster on structured JSON - similar inputs produce similar digests, which raises the practical collision rate above the birthday-bound theoretical rate. The 64-bit prefix gives P(collision) ≈ 2.7×10⁻⁸ for 10⁶ inputs, which is acceptable for a cache where a false positive serves stale data rather than causing corruption.
 
-**Static `toolDependencies` graph.** The Anthropic API has no structured field for the model to express inter-tool dependencies. Parsing them from free text is fragile and I didn't want to commit to a prompt format. Static declaration at the agent level is explicit and testable.
+Two interface decisions: `CachePolicy` is a discriminated union rather than a flat object, so accessing `ttlMs` on a `"no-cache"` policy is a compile error instead of a silent runtime bug. Cache capacity is configured at construction rather than per write - early versions took `maxEntries` on every `set()` call, which is a leaky interface that any Redis backend would have to accept a parameter it can't use.
 
-**`CachePolicy` as a discriminated union.** A `"no-cache"` policy has no `ttlMs` to configure. If `CachePolicy` were a flat object with an optional strategy field, accessing `ttlMs` on a no-cache policy would be a silent runtime bug. As a discriminated union, it's a compile error.
-
-**Cache capacity configured at construction, not per write.** Early versions of the cache took `maxEntries` on every `set()` call. That's a leaky interface - any Redis backend would have to accept a parameter it can't use. Moved to `configure()` called once per tool at agent construction, so writes are just writes.
-
-**Jitter on retries.** Without it, clients that all fail at t=0 retry at t+delay, hitting the recovering service with the same burst. Adding `[0, jitterMs]` of randomness breaks the synchrony.
-
-**`toolDependencies` validated at construction time.** A misspelled tool name (`"summerise"` vs `"summarise"`) was previously silently dropped - no error, no sequencing, mysterious ordering at runtime. Validating against the registry at construction time names the offending tool immediately.
+The dependency graph is validated at construction time because a misspelled tool name previously produced no error and no sequencing - it silently dropped the dependency and the ordering bug only showed up at runtime. Retry jitter is there because without it, clients that all fail at the same moment retry at the same moment, hitting a recovering service with the same burst that just took it down.
 
 ## What I'd do differently
 
