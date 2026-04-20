@@ -2,9 +2,10 @@
 
 ## research-agent.ts
 
-Runs a multi-step research task against three tools: `web_search`, `calculator`, and `file_reader`.
+Runs a multi-step research task against four tools: `web_search`, `calculator`, `file_reader`, and `fetch`.
 
-- The two web searches in step 1 run in parallel (no declared dependencies between them).
+- Step 1: two web searches and a calculator call run in parallel (3 independent calls, 1 level).
+- Step 2: file read and HTTP fetch run in parallel (2 independent calls, 1 level).
 - The calculator result is served from cache on repeat runs within the same session.
 - Live progress is printed to stderr via `AgentOptions.onEvent` - dispatches and retries appear as they happen, before the final trace is rendered.
 

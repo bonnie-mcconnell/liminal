@@ -23,7 +23,7 @@
 
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-// Local development import - published consumers use: import { ... } from "liminal"
+// Local development import - published consumers use: import { ... } from "@bonnie-mcconnell/liminal"
 import {
   Agent,
   ToolRegistry,
