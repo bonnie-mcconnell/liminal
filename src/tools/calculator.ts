@@ -81,7 +81,7 @@ class Parser {
     this.skipWhitespace();
     if (this.pos < this.src.length) {
       throw new SyntaxError(
-        `Unexpected character at position ${String(this.pos)}: "${String(this.src[this.pos])}"`,
+        `Unexpected character at position ${String(this.pos)}: "${this.src[this.pos] ?? "EOF"}"`,
       );
     }
     return result;
@@ -198,7 +198,7 @@ class Parser {
     }
 
     throw new SyntaxError(
-      `Unexpected token at position ${String(this.pos)}: "${String(this.src[this.pos] ?? "EOF")}"`,
+      `Unexpected token at position ${String(this.pos)}: "${this.src[this.pos] ?? "EOF"}"`,
     );
   }
 
