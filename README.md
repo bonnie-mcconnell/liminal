@@ -1,6 +1,7 @@
 # Liminal
 
 ![CI](https://github.com/bonnie-mcconnell/liminal/actions/workflows/ci.yml/badge.svg)
+![npm](https://img.shields.io/npm/v/@bonnie-mcconnell/liminal)
 
 A TypeScript library that manages the tool-use loop in LLM agents: runs independent calls in parallel, sequences dependent ones via a DAG, retries failures with backoff, caches results by content hash, and keeps tool errors from crashing the run. 323 tests. Three runtime dependencies.
 
