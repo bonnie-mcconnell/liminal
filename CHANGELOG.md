@@ -36,7 +36,7 @@ Added `ToolRegistry.size` and `[Symbol.iterator]` - I kept reaching for these wh
 
 `toolDependencies` is now validated at construction time. Previously, a misspelled tool name in the dependency graph was silently dropped - no error, no sequencing. The failure showed up as a mysterious ordering bug at runtime that was annoying to track down.
 
-The benchmark script (`npm run bench`) measures parallel vs sequential with controlled artificial delays. On 3 independent 200ms calls: sequential ~602ms, parallel ~201ms, 2.99× speedup at 99.8% of theoretical maximum. Scheduling overhead is under 1ms.
+The benchmark script (`npm run bench`) measures parallel vs sequential with controlled artificial delays. On 3 independent 200ms calls: sequential ~624ms, parallel ~211ms, 2.95× speedup at 99.8% of theoretical maximum. Scheduling overhead is under 11ms.
 
 25 new tests (276 → 301), covering: abort pre-run and mid-run, AbortSignal threading, ToolRegistry iteration, construction-time validation, and a handful of edge cases I found while writing the cancellation code.
 

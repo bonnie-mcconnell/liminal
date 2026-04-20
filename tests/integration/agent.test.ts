@@ -809,6 +809,62 @@ describe("Agent - integration", () => {
   });
 
   describe("abort()", () => {
+    it("stops between iterations when aborted mid-run", async () => {
+      // The slow tool takes 50ms. We abort after 10ms, while it's in flight.
+      // The executor races the AbortSignal against execution, so the signal
+      // wins. The agent loop sees the abort on the next iteration check and
+      // returns a structured PlannerError rather than rejecting.
+      const slowTool: ToolDefinition = {
+        name: "slow_tool",
+        description: "Takes 50ms to respond.",
+        inputSchema: z.object({ value: z.string() }),
+        outputSchema: z.object({ echoed: z.string() }),
+        execute: async ({ value }: { value: string }, signal) => {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => resolve(), 50);
+            signal?.addEventListener("abort", () => {
+              clearTimeout(t);
+              reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
+            });
+          });
+          return { echoed: value };
+        },
+        policy: {
+          timeoutMs: 5_000,
+          retry: {
+            maxAttempts: 1,
+            backoff: "none",
+            baseDelayMs: 0,
+            maxDelayMs: 0,
+            jitterMs: 0,
+            shouldRetry: () => false,
+          },
+          cache: { strategy: "no-cache" },
+        },
+      };
+
+      setResponses([
+        toolResponse([{ id: "c1", name: "slow_tool", input: { value: "x" } }]),
+        textResponse("Done."),
+      ]);
+
+      const agent = new Agent(new ToolRegistry().register(slowTool), { model: MODEL });
+
+      // Abort while the tool is executing
+      setTimeout(() => agent.abort(), 10);
+
+      const result = await agent.run("task");
+
+      // run() must always resolve, never reject
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error.code).toBe("PLANNER_ERROR");
+      }
+      // Trace is always present even on abort
+      expect(result.trace).toBeDefined();
+      expect(result.trace.runId).toMatch(/^run_/);
+    });
+
     it("returns a PlannerError result when aborted before the first API call", async () => {
       setResponses([textResponse("should not appear")]);
 
