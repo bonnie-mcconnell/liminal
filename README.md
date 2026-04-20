@@ -41,15 +41,15 @@ $ npm run bench
 
   Strategy      Mean        Stddev      Samples
   ────────────────────────────────────────────────────────
-  Sequential    602ms       1ms         602ms  604ms  603ms  601ms  602ms
-  Parallel      201ms       0ms         201ms  201ms  201ms  202ms  201ms
+  Sequential    624ms       9ms         617ms  626ms  620ms  641ms  617ms
+  Parallel      211ms       4ms         215ms  206ms  214ms  215ms  207ms
 
-  Speedup:              2.99×
+  Speedup:              2.95×
   Theoretical maximum:  3.00×
-  Efficiency:           99.8% of theoretical
+  Efficiency:           98.4% of theoretical
 ```
 
-Scheduling overhead is sub-millisecond.
+Scheduling overhead is under 11ms. The variation in sequential times (~9ms stddev) is OS scheduler noise, not the library.
 
 ## How it works
 
