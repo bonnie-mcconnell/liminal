@@ -174,7 +174,7 @@ async function main(): Promise<void> {
     if (result.error.cause instanceof Error) {
       console.error(`  ${result.error.cause.message}`);
     }
-    process.exit(1);
+    throw new Error(result.error.message);
   }
 }
 
