@@ -5,6 +5,11 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // Silence NDJSON structured logs during test runs. The logger reads
+    // LOG_LEVEL on every emit, so this env var suppresses output without
+    // touching any test code. Tests that explicitly assert on log output
+    // should spy on process.stdout directly.
+    env: { LOG_LEVEL: "error" },
     // forks pool supports top-level await in test files (used in integration
     // tests to import modules after vi.mock is registered).
     pool: "forks",
