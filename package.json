@@ -1,6 +1,6 @@
 {
-  "name": "liminal",
-  "version": "0.3.0",
+  "name": "@bonnie-mcconnell/liminal",
+  "version": "0.4.2",
   "description": "Tool-use orchestration for the Anthropic API - typed errors, SHA-256 content-hash caching, DAG scheduling, typed event stream, and structured observability.",
   "keywords": [
     "llm",
@@ -42,11 +42,13 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --project tsconfig.test.json --noEmit",
-    "lint": "eslint src tests examples",
-    "format": "prettier --write src tests examples",
-    "format:check": "prettier --check src tests examples",
+    "lint": "eslint src tests examples benchmarks",
+    "format": "prettier --write src tests examples benchmarks",
+    "format:check": "prettier --check src tests examples benchmarks",
     "demo": "tsx examples/research-agent.ts",
-    "demo:dry": "tsx examples/research-agent.ts --dry-run"
+    "demo:dry": "tsx examples/research-agent.ts --dry-run",
+    "bench": "tsx benchmarks/parallel-vs-sequential.ts",
+    "bench:custom": "tsx benchmarks/parallel-vs-sequential.ts --calls 4 --delay 300"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
@@ -66,5 +68,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
