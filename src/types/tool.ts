@@ -81,7 +81,17 @@ export interface ToolDefinition<
   readonly description: string;
   readonly inputSchema: TInput;
   readonly outputSchema: TOutput;
-  readonly execute: (input: ZodInfer<TInput>) => Promise<ZodInfer<TOutput>>;
+  /**
+   * Runs the tool and returns its output.
+   *
+   * The optional `signal` supports cooperative cancellation. When provided,
+   * tools should forward it to any underlying async operations (fetch, fs
+   * calls, etc.) so the work actually stops rather than running to completion
+   * in the background after a timeout or abort fires. Tools that ignore the
+   * signal still work correctly - the executor races it externally via
+   * `Promise.race` - but they continue consuming resources until they settle.
+   */
+  readonly execute: (input: ZodInfer<TInput>, signal?: AbortSignal) => Promise<ZodInfer<TOutput>>;
   /**
    * Returns a short, human-readable label for a validated input value.
    * Used by `renderTrace` to annotate tool calls in the execution tree.
@@ -92,12 +102,6 @@ export interface ToolDefinition<
    * `summarize` explicitly when your tool's primary identifier doesn't
    * appear under one of those names, or when combining multiple fields
    * produces a more useful label.
-   *
-   * @example
-   * ```ts
-   * // City and units together are more useful than city alone:
-   * summarize: ({ city, units }) => `${city} (${units})`
-   * ```
    */
   readonly summarize?: (input: ZodInfer<TInput>) => string;
   /** Partial overrides merged with the registry defaults at registration time. */

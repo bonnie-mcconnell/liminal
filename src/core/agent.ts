@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   AgentConfig,
@@ -38,72 +38,36 @@ const DEFAULT_CONFIG: Omit<AgentConfig, "model"> = {
  */
 export interface AgentOptions {
   /**
-   * Cache backend. When omitted, the agent creates a private `ResultCache`.
-   * Pass a shared instance to deduplicate tool calls across multiple agents
-   * or across successive calls to `run()`:
-   *
-   * ```ts
-   * const cache = new ResultCache();
-   * const agent = new Agent(registry, config, { cache });
-   * ```
-   *
-   * Any value satisfying the `Cache` interface works here - including a
-   * Redis-backed implementation for cross-process sharing.
+   * Cache backend. Defaults to a private `ResultCache`. Pass a shared instance
+   * to deduplicate calls across agents or successive `run()` calls.
+   * Any value satisfying the `Cache` interface works - including Redis.
    */
   cache?: Cache;
   /** Falls back to the `ANTHROPIC_API_KEY` environment variable. */
   apiKey?: string;
   /**
-   * Called synchronously for every `ToolEvent` emitted during a run.
-   *
-   * Use this for progress indicators, dashboards, metrics collection, or
-   * detailed test assertions. The callback receives a fully typed event -
-   * narrow on `event.type` to handle specific transitions:
-   *
-   * ```ts
-   * const agent = new Agent(registry, config, {
-   *   onEvent(event) {
-   *     if (event.type === "dispatched") {
-   *       console.log(`→ ${event.toolName} (attempt ${event.attempt})`);
-   *     }
-   *     if (event.type === "retrying") {
-   *       console.warn(`  retrying in ${event.delayMs}ms…`);
-   *     }
-   *     if (event.type === "succeeded") {
-   *       metrics.record("tool.duration", event.durationMs, { tool: event.toolName });
-   *     }
-   *   },
-   * });
-   * ```
-   *
-   * The callback must not throw - exceptions are caught and logged.
-   * For async work, use `queueMicrotask` or `setTimeout` inside the handler;
-   * the agent loop does not await event callbacks.
+   * Called synchronously for every `ToolEvent` during a run. Narrow on
+   * `event.type` to handle specific transitions. Must not throw - exceptions
+   * are caught and logged. Not awaited - use `queueMicrotask` for async work.
    */
   onEvent?: (event: ToolEvent) => void;
 }
 
 /**
- * Drives the agent loop: calls the model, executes tool requests in
- * dependency order, feeds results back, and repeats until the model
- * produces a final text response or a configured limit is reached.
+ * Drives the agent loop: calls the model, executes tool requests in dependency
+ * order, feeds results back, repeats until the model produces a final response
+ * or a configured limit is reached.
  *
- * **Error handling** - tool errors are returned to the model as structured
- * `tool_result` messages rather than aborting the run. The model receives
- * the error code and message and can adjust its plan (different parameters,
- * a different tool, or a direct answer). Only budget violations and the
- * iteration ceiling cause a hard abort.
- *
- * **Parallelism** - independent tool calls in a single turn run
- * concurrently via `Promise.allSettled`. A failure in one call does not
- * cancel the others. Tool dependencies declared in `AgentConfig.toolDependencies`
- * impose sequencing where needed.
+ * Tool errors are returned to the model as structured `tool_result` messages
+ * rather than aborting the run - the model sees the error code and can adjust
+ * its plan. Only budget violations and the iteration ceiling cause a hard stop.
  */
 export class Agent {
   private readonly client: Anthropic;
   private readonly config: AgentConfig;
   private readonly cache: Cache;
   private readonly events: EventEmitter<ToolEvent>;
+  private runController: AbortController | undefined;
 
   constructor(
     private readonly registry: ToolRegistry,
@@ -115,9 +79,65 @@ export class Agent {
     this.cache = cache ?? new ResultCache();
     this.events = new EventEmitter<ToolEvent>();
     if (onEvent !== undefined) this.events.on(onEvent);
+
+    // Pre-configure LRU capacity per tool so Cache.set() doesn't carry maxEntries on every write.
+    for (const tool of this.registry) {
+      const policy = this.registry.getPolicy(tool.name);
+      if (policy?.cache.strategy === "content-hash") {
+        this.cache.configure(tool.name, policy.cache.maxEntries);
+      }
+    }
+
+    // maxConcurrency: 0 would create zero workers and hang - catch it early.
+    if (this.config.maxConcurrency !== undefined && this.config.maxConcurrency < 1) {
+      throw new RangeError(
+        `maxConcurrency must be at least 1 (got ${String(this.config.maxConcurrency)})`,
+      );
+    }
+
+    // Catch misspelled tool names in the dependency graph at construction time.
+    // A typo ("summerise" vs "summarise") was previously silently dropped - no
+    // error, no sequencing, mysterious runtime behaviour.
+    if (this.config.toolDependencies !== undefined) {
+      const registeredNames = new Set(this.registry.names());
+      const unknown: string[] = [];
+      for (const [toolName, deps] of Object.entries(this.config.toolDependencies)) {
+        if (!registeredNames.has(toolName)) unknown.push(toolName);
+        for (const dep of deps) {
+          if (!registeredNames.has(dep)) unknown.push(dep);
+        }
+      }
+      if (unknown.length > 0) {
+        throw new Error(
+          `toolDependencies references tool names not in the registry: ${[...new Set(unknown)].join(", ")}. ` +
+            `Register all tools before constructing the Agent.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Stops the current run after the in-flight model call or tool turn settles.
+   * The `run()` promise always resolves - never rejects.
+   * Calling before `run()` pre-aborts the next run (returns immediately, no API calls).
+   * Calling when idle is a no-op.
+   */
+  abort(): void {
+    if (this.runController === undefined) {
+      // Pre-abort: next run() will see the signal already fired and return immediately.
+      this.runController = new AbortController();
+    }
+    this.runController.abort();
   }
 
   async run(task: string): Promise<AgentResult> {
+    // Use any pre-aborted controller from abort()-before-run(), otherwise make a fresh one.
+    if (this.runController === undefined || !this.runController.signal.aborted) {
+      this.runController = new AbortController();
+    }
+    // Capture signal now - this run owns this reference even if runController is replaced later.
+    const signal = this.runController.signal;
+
     const runId = generateRunId();
     const log = createLogger(runId);
     const executor = new ToolExecutor(this.registry, this.cache, log, this.events);
@@ -138,6 +158,13 @@ export class Agent {
     let hardError: AnyAgentError | AnyToolError | undefined;
 
     for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
+      // Check abort between iterations - after a tool turn settles, before the next API call.
+      if (signal.aborted) {
+        log.warn("agent.aborted", { iteration });
+        hardError = new PlannerError("Run was aborted by caller");
+        break;
+      }
+
       const budgetError = checkBudget(this.config.budget, totalUsage, iteration);
       if (budgetError !== undefined) {
         log.warn("agent.budget_exceeded", { budgetType: budgetError.budgetType });
@@ -197,18 +224,15 @@ export class Agent {
         rawInput: b.input,
       }));
 
-      // Resolve declared tool dependencies into the call IDs present in this
-      // turn. Dependencies referencing tools not called this turn are ignored
-      // - the graph is declared statically but applied selectively per turn.
+      // Map static dependency graph to the call IDs present this turn.
       const scheduled = resolveScheduledCalls(toolCalls, this.config.toolDependencies);
 
       let levels: readonly (readonly ScheduledCall[])[];
       try {
         levels = schedule(scheduled);
       } catch (err) {
-        // CyclicDependencyError is a configuration mistake - a declared
-        // dependency graph that creates a loop. Return a structured error
-        // rather than letting the exception reject the run() promise.
+        // CyclicDependencyError is a config bug - return a structured result
+        // rather than letting it reject the run() promise.
         log.error("agent.cyclic_dependency", { error: String(err) });
         hardError =
           err instanceof CyclicDependencyError
@@ -230,16 +254,14 @@ export class Agent {
 
       for (const level of levels) {
         const settled = await allSettledConcurrent(
-          level.map((call) => () => executor.execute(call)),
+          level.map((call) => () => executor.execute(call, signal)),
           this.config.maxConcurrency,
         );
         for (const result of settled) {
           if (result.status === "fulfilled") {
             toolResults.push(result.value);
           } else {
-            // executor.execute() is documented to never reject. This branch
-            // guards the invariant and will surface immediately in tests if
-            // that contract is ever accidentally broken.
+            // execute() never rejects by contract - this branch guards that invariant.
             log.error("agent.executor_threw", { reason: String(result.reason) });
           }
         }
@@ -277,14 +299,14 @@ export class Agent {
       totalDurationMs: completedAt.getTime() - startedAt.getTime(),
     };
 
+    // Clear the controller so future runs get a fresh signal.
+    this.runController = undefined;
+
     if (finalOutput !== undefined) {
       return { status: "success", output: finalOutput, trace, usage: { ...totalUsage } };
     }
 
-    // At this point finalOutput is undefined, which means the loop exited via
-    // break (budget, API error, or max-iterations guard above) - so hardError
-    // is always defined. The non-null assertion makes that invariant explicit
-    // rather than hiding it behind a ?? fallback that can never fire.
+    // Loop exited via break - hardError is always set at that point.
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     return { status: "error", error: hardError!, trace, usage: { ...totalUsage } };
   }
@@ -295,20 +317,8 @@ export class Agent {
 // ---------------------------------------------------------------------------
 
 /**
- * Converts a flat list of tool calls into `ScheduledCall` objects with
- * resolved `dependsOn` arrays.
- *
- * The static dependency graph in `AgentConfig.toolDependencies` is keyed by
- * tool name. Each turn, we have a concrete set of call IDs. This function
- * bridges the two: for each call, it finds any declared dependencies whose
- * tools are also being called this turn, then maps those tool names to their
- * actual call IDs.
- *
- * Dependencies on tools not present in this turn are silently dropped - the
- * graph is declared globally but only the edges that matter right now apply.
- *
- * When no dependency graph is configured, every call gets `dependsOn: []`
- * and the scheduler puts them all in one level, running fully in parallel.
+ * Maps tool names in the static dependency graph to concrete call IDs for
+ * this turn. Dependencies on tools not called this turn are silently dropped.
  *
  * @example
  * Graph: `{ summarise: ["fetch"] }`
@@ -323,9 +333,7 @@ function resolveScheduledCalls(
     return calls.map((c) => ({ ...c, dependsOn: [] }));
   }
 
-  // Index calls by tool name so we can resolve name → id in O(1).
-  // If the same tool appears multiple times in one turn, we map each call
-  // to all calls of each of its declared dependency tools.
+  // name → [id, ...] index; a tool may appear multiple times in one turn.
   const callsByToolName = new Map<string, string[]>();
   for (const call of calls) {
     const ids = callsByToolName.get(call.toolName) ?? [];
@@ -339,9 +347,8 @@ function resolveScheduledCalls(
       return { ...call, dependsOn: [] };
     }
 
-    // Resolve each declared dependency tool name to its call ID(s) in this
-    // turn. Deps on absent tools are dropped. Deps on multi-call tools
-    // require all of them to complete (conservative - correct for all cases).
+    // Map each declared dep tool name → its call IDs this turn. Absent tools skipped;
+    // if a tool appears multiple times, all its calls must complete (conservative).
     const dependsOn: string[] = [];
     for (const depToolName of declaredDeps) {
       const depIds = callsByToolName.get(depToolName);
@@ -360,37 +367,31 @@ function resolveScheduledCalls(
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
-/**
- * Executes `tasks` with at most `limit` running concurrently.
- *
- * When `limit` is undefined or >= tasks.length, all tasks run simultaneously
- * (same behaviour as Promise.allSettled). When `limit` < tasks.length, tasks
- * are dispatched in order; a new task starts as soon as a running slot opens.
- *
- * Like Promise.allSettled, this never rejects - individual task rejections
- * are captured in the returned PromiseSettledResult array.
- */
+/** Promise.allSettled with an optional concurrency cap. Never rejects. */
 async function allSettledConcurrent<T>(
   tasks: readonly (() => Promise<T>)[],
   limit: number | undefined,
 ): Promise<PromiseSettledResult<T>[]> {
-  if (limit === undefined || limit >= tasks.length) {
+  // limit < 1 is rejected at Agent construction; this guard is defence-in-depth.
+  if (limit === undefined || limit < 1 || limit >= tasks.length) {
     return Promise.allSettled(tasks.map((t) => t()));
   }
 
-  // Pre-fill with a typed placeholder so the array element type is known.
+  // Sentinel so TypeScript knows the element type. Any slot not overwritten
+  // by runNext() produces a descriptive error rather than a silent undefined.
+  const NEVER_WRITTEN: PromiseSettledResult<T> = {
+    status: "rejected",
+    reason: new Error("allSettledConcurrent: slot never written - bug in pool implementation"),
+  };
   const results: PromiseSettledResult<T>[] = Array.from(
     { length: tasks.length },
-    (): PromiseSettledResult<T> => ({ status: "rejected", reason: undefined }),
+    () => NEVER_WRITTEN,
   );
   let nextIndex = 0;
 
   async function runNext(): Promise<void> {
     while (nextIndex < tasks.length) {
       const index = nextIndex++;
-      // tasks[index] is always defined here: the while guard ensures
-      // index < tasks.length, but noUncheckedIndexedAccess requires explicit
-      // handling. We use a local variable and check for undefined defensively.
       const task = tasks[index];
       if (task === undefined) break;
       try {
@@ -401,21 +402,20 @@ async function allSettledConcurrent<T>(
     }
   }
 
-  // Start `limit` concurrent workers; each drains from the shared nextIndex.
-  await Promise.all(Array.from({ length: limit }, runNext));
+  // Cap workers at tasks.length - creating more would spin-exit immediately.
+  const workerCount = Math.min(limit, tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, runNext));
   return results;
 }
 
 /**
- * Generates a unique run identifier backed by the OS CSPRNG.
- *
- * `randomUUID()` produces a v4 UUID with 122 bits of randomness - appropriate
- * for a correlation key that appears in logs and distributed traces.
- * The hyphens are stripped and the result is prefixed with `run_` for
- * readability in log output.
+ * Generates a unique run identifier from the OS CSPRNG.
+ * 8 random bytes → 16 hex chars. Birthday bound for N=10⁶ events in a 2⁶⁴
+ * space: P ≈ N²/(2×2⁶⁴) ≈ 2.7×10⁻⁸ - negligible for any practical deployment.
+ * (10⁻¹⁸ would require ~99 bits; 64 bits gives ~10⁻⁸.)
  */
 function generateRunId(): string {
-  return `run_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  return `run_${randomBytes(8).toString("hex")}`;
 }
 
 function accumulateUsage(acc: Mutable<TokenUsage>, usage: Anthropic.Usage): void {

@@ -27,7 +27,16 @@ export function schedule(calls: readonly ScheduledCall[]): readonly (readonly Sc
   const byId = new Map(calls.map((c) => [c.id, c]));
 
   if (byId.size !== calls.length) {
-    throw new Error("Duplicate call IDs in the same scheduling batch");
+    // Find which ID appears more than once for a useful error message.
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const call of calls) {
+      if (seen.has(call.id)) duplicates.add(call.id);
+      seen.add(call.id);
+    }
+    throw new Error(
+      `Duplicate call IDs in the same scheduling batch: ${[...duplicates].join(", ")}`,
+    );
   }
 
   for (const call of calls) {

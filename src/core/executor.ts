@@ -16,21 +16,12 @@ import {
 } from "../errors/index.js";
 
 /**
- * Executes a single tool call through the full lifecycle:
- * cache check → input validation → dispatch with timeout → retry →
- * output validation → cache write → result.
+ * Executes a single tool call: cache check → input validation → dispatch with
+ * timeout → retry with jitter → output validation → cache write → result.
  *
- * **Never throws.** Every failure path returns a `ToolResult` with
- * `status: "error"` so the agent loop can forward structured feedback to the
- * model rather than crashing the run. Only budget violations and the
- * iteration ceiling (both handled in `Agent`) cause a hard abort.
- *
- * **Event emission.** When an `EventEmitter<ToolEvent>` is provided, the
- * executor emits a typed event at each significant lifecycle transition.
- * Emission is a synchronous side-channel - it does not affect the return
- * value, timing, or error handling of `execute`. Consumers use this for
- * progress indicators, dashboards, and test assertions without coupling
- * to the agent loop.
+ * Never throws - every failure path returns a typed `ToolResult` so the agent
+ * loop can forward structured feedback to the model. Pass an `AbortSignal` to
+ * stop execution before the next attempt; in-flight attempts run to completion.
  */
 export class ToolExecutor {
   constructor(
@@ -40,7 +31,21 @@ export class ToolExecutor {
     private readonly events?: EventEmitter<ToolEvent>,
   ) {}
 
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async execute(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+    // Bail out before touching anything if already cancelled.
+    if (signal?.aborted === true) {
+      const error = new ToolExecutionError(call.toolName, signal.reason);
+      this.emit({
+        type: "failed",
+        callId: call.id,
+        toolName: call.toolName,
+        ts: now(),
+        error,
+        attempts: 0,
+      });
+      return { status: "error", callId: call.id, toolName: call.toolName, error, attempts: 0 };
+    }
+
     const tool = this.registry.get(call.toolName);
     if (tool === undefined) {
       this.log.warn("tool.not_found", { callId: call.id, toolName: call.toolName });
@@ -79,9 +84,7 @@ export class ToolExecutor {
 
     const validatedInput: unknown = parseResult.data;
 
-    // Narrow the cache policy before accessing strategy-specific fields.
-    // The discriminated union on CachePolicy requires this narrowing -
-    // accessing ttlMs on a "no-cache" policy is a compile error.
+    // Discriminated union narrowing - accessing ttlMs on a "no-cache" policy is a compile error.
     if (policy.cache.strategy === "content-hash") {
       const cached = this.cache.get(call.toolName, validatedInput, policy.cache.vary);
       if (cached !== undefined) {
@@ -105,21 +108,50 @@ export class ToolExecutor {
       }
     }
 
-    return this.executeWithRetry(call, tool.execute, validatedInput, tool.outputSchema, policy);
+    return this.executeWithRetry(
+      call,
+      tool.execute,
+      validatedInput,
+      tool.outputSchema,
+      policy,
+      signal,
+    );
   }
 
   private async executeWithRetry(
     call: ToolCall,
-    executeFn: (input: unknown) => Promise<unknown>,
+    executeFn: (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     input: unknown,
     outputSchema: ZodTypeAny,
     policy: ToolPolicy,
+    signal?: AbortSignal,
   ): Promise<ToolResult> {
     const runStart = Date.now();
     let attempt = 0;
     let lastError: unknown;
 
     while (attempt < policy.retry.maxAttempts) {
+      // Check before every attempt - signal could have fired since the pre-dispatch check.
+      if (signal?.aborted === true) {
+        const error = new ToolExecutionError(call.toolName, signal.reason);
+        this.log.warn("tool.aborted", { callId: call.id, toolName: call.toolName, attempt });
+        this.emit({
+          type: "failed",
+          callId: call.id,
+          toolName: call.toolName,
+          ts: now(),
+          error,
+          attempts: attempt,
+        });
+        return {
+          status: "error",
+          callId: call.id,
+          toolName: call.toolName,
+          error,
+          attempts: attempt,
+        };
+      }
+
       attempt++;
 
       if (attempt > 1) {
@@ -154,28 +186,63 @@ export class ToolExecutor {
       let rawOutput: unknown;
 
       try {
-        // Use a manually managed timeout handle so we can clear it promptly on
-        // success - a dangling timer would keep the event loop alive.
+        // Manually managed timeout so we can clear it on success - a dangling
+        // timer keeps the event loop alive.
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
             reject(new ToolTimeoutError(call.toolName, policy.timeoutMs));
           }, policy.timeoutMs);
         });
+
+        // Race the abort signal alongside execution and timeout. { once: true }
+        // removes the listener on fire, but not on success - explicit cleanup
+        // in the finally block prevents a dangling listener and its potential
+        // unhandled rejection if the signal fires later.
+        let onAbort: (() => void) | undefined;
+        let abortReject: ((err: unknown) => void) | undefined;
+        const abortPromise =
+          signal !== undefined
+            ? new Promise<never>((_, reject) => {
+                abortReject = reject;
+                if (signal.aborted) {
+                  reject(new ToolExecutionError(call.toolName, signal.reason));
+                  return;
+                }
+                onAbort = () => {
+                  reject(new ToolExecutionError(call.toolName, signal.reason));
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
+              })
+            : undefined;
+
+        const racers: Promise<unknown>[] = [executeFn(input, signal), timeoutPromise];
+        if (abortPromise !== undefined) racers.push(abortPromise);
+
         try {
-          rawOutput = await Promise.race([executeFn(input), timeoutPromise]);
+          rawOutput = await Promise.race(racers);
         } finally {
           clearTimeout(timeoutHandle);
+          if (onAbort !== undefined && signal !== undefined) {
+            signal.removeEventListener("abort", onAbort);
+          }
+          // Silence the losing abort promise - we only care about the race winner.
+          abortPromise?.catch(() => undefined);
+          void abortReject; // referenced to prevent TS unused-var warning
         }
       } catch (err) {
         lastError = err;
-        // Wrap shouldRetry in try/catch: a buggy policy function must not
-        // propagate out of execute() and break the never-throws contract.
+        // Wrap shouldRetry so a buggy policy function can't break the never-throws contract.
         let willRetry = false;
         try {
           willRetry = policy.retry.shouldRetry(err, attempt) && attempt < policy.retry.maxAttempts;
-        } catch {
-          // Treat a crashing shouldRetry as "don't retry" - conservative and safe.
+        } catch (policyErr) {
+          this.log.warn("tool.should_retry_threw", {
+            callId: call.id,
+            toolName: call.toolName,
+            attempt,
+            error: String(policyErr),
+          });
           willRetry = false;
         }
         this.emit({
@@ -198,8 +265,7 @@ export class ToolExecutor {
           toolName: call.toolName,
           issues: outParse.error.issues.map((i: ZodIssue) => `${i.path.join(".")}: ${i.message}`),
         });
-        // Output validation failure is always a bug in the tool implementation,
-        // not in the model's call. Don't retry - same code, same bad output.
+        // Output validation failure is a bug in the tool, not the model - retrying won't help.
         this.emit({
           type: "failed",
           callId: call.id,
@@ -220,14 +286,7 @@ export class ToolExecutor {
       const durationMs = Date.now() - attemptStart;
 
       if (policy.cache.strategy === "content-hash") {
-        this.cache.set(
-          call.toolName,
-          input,
-          policy.cache.vary,
-          outParse.data,
-          policy.cache.ttlMs,
-          policy.cache.maxEntries,
-        );
+        this.cache.set(call.toolName, input, policy.cache.vary, outParse.data, policy.cache.ttlMs);
       }
 
       this.log.info("tool.succeeded", {
@@ -258,9 +317,8 @@ export class ToolExecutor {
       };
     }
 
-    // All attempts exhausted. MaxRetriesExceededError wraps the underlying
-    // error only when retries were actually configured (maxAttempts > 1) -
-    // for a single-attempt tool, the underlying error is the right signal.
+    // Wrap in MaxRetriesExceededError only when retries were configured.
+    // For single-attempt tools the underlying error is the right signal.
     const wrapped =
       lastError instanceof ToolTimeoutError || lastError instanceof ToolExecutionError
         ? lastError
@@ -309,17 +367,10 @@ export class ToolExecutor {
 }
 
 /**
- * Computes the delay before the next retry attempt.
- *
- * Exponential backoff: `baseDelayMs × 2^(attempt−1)`, capped at `maxDelayMs`.
- * Linear backoff:      `baseDelayMs × attempt`, same cap.
- * None:                0 (used for non-retryable tools like the calculator).
- *
- * A uniform random jitter in `[0, jitterMs]` is added to every non-zero delay.
- * Without jitter, a burst of callers that all fail at t=0 will all retry at
- * t+delay, producing the same load spike that caused the original failure.
- * Jitter spreads retries across the interval, allowing the target service to
- * recover gradually.
+ * Delay before the next retry attempt, with uniform jitter in [0, jitterMs].
+ * Exponential: baseDelayMs × 2^(attempt−1), capped at maxDelayMs.
+ * Linear:      baseDelayMs × attempt, same cap.
+ * Jitter desynchronises clients that all fail at the same moment.
  */
 export function computeDelay(policy: ToolPolicy["retry"], attempt: number): number {
   if (policy.backoff === "none") return 0;

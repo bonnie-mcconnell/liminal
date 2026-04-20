@@ -1,6 +1,13 @@
 import { z } from "zod";
+import { createRequire } from "node:module";
 import { ToolTimeoutError } from "../errors/index.js";
 import type { ToolDefinition } from "../types/index.js";
+
+// Read version from package.json at import time so the User-Agent string
+// doesn't need a manual bump on every release.
+const _require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+const PKG_VERSION = (_require("../../package.json") as { version: string }).version;
 
 const inputSchema = z.object({
   url: z.string().url().describe("The URL to fetch. Must be http:// or https://."),
@@ -52,14 +59,15 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
     "Returns the raw body as a string - for JSON, the model can parse it.",
   inputSchema,
   outputSchema,
-  execute: async ({ url, method, headers, body, maxBytes }) => {
+  execute: async ({ url, method, headers, body, maxBytes }, signal) => {
     const init: RequestInit = {
       method,
       headers: {
-        "User-Agent": "liminal/0.3.0",
+        "User-Agent": `liminal/${PKG_VERSION}`,
         ...headers,
       },
     };
+    if (signal !== undefined) init.signal = signal;
     if (body !== undefined) init.body = body;
     const response = await fetch(url, init);
 
@@ -70,10 +78,8 @@ export const fetchTool: ToolDefinition<typeof inputSchema, typeof outputSchema> 
     });
 
     // Read the full body as an ArrayBuffer then slice to maxBytes.
-    // arrayBuffer() buffers the entire response - for truly large responses
-    // this is wasteful, but it avoids the any-typed ReadableStream reader API
-    // and is correct for the tool's contract (maxBytes default: 500 KB).
-    // Callers that need true streaming should use the Fetch API directly.
+    // arrayBuffer() buffers the entire response, but maxBytes caps at 5 MB so
+    // the worst case is bounded. Callers needing true streaming use fetch() directly.
     const rawBuffer = await response.arrayBuffer();
     const truncated = rawBuffer.byteLength > maxBytes;
     const buffer = Buffer.from(truncated ? rawBuffer.slice(0, maxBytes) : rawBuffer);

@@ -42,8 +42,18 @@ export class ToolRegistry {
     return this.resolvedPolicies.get(name);
   }
 
+  /** Number of tools currently registered. */
+  get size(): number {
+    return this.tools.size;
+  }
+
   names(): string[] {
     return [...this.tools.keys()];
+  }
+
+  /** Iterate over all registered `ToolDefinition` objects. */
+  [Symbol.iterator](): IterableIterator<ToolDefinition> {
+    return this.tools.values() as IterableIterator<ToolDefinition>;
   }
 
   toAnthropicTools(): Anthropic.Tool[] {

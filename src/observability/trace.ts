@@ -4,14 +4,9 @@ import type { ToolRegistry } from "../core/registry.js";
 /**
  * Renders an `ExecutionTrace` as a human-readable tree string.
  *
- * Pure function - takes a trace and an optional registry, returns a string.
- * No side effects, no I/O.
- *
- * When a `ToolRegistry` is provided, the renderer calls each tool's
- * `summarize` hook (if defined) to produce the input label in parentheses.
- * Without a registry the renderer falls back to a priority-ordered heuristic:
- * it checks `query`, `expression`, `path`, `url`, `id`, `name` before
- * falling back to the first string field of the input object.
+ * Pass a `ToolRegistry` to use each tool's `summarize` hook for input labels.
+ * Without one, the renderer checks `query`, `expression`, `path`, `url`, `id`,
+ * `name` then falls back to the first string field.
  *
  * @example
  * ```
@@ -20,8 +15,6 @@ import type { ToolRegistry } from "../core/registry.js";
  * │  ├─ web_search("typescript strict mode")  →  success  312ms
  * │  ├─ web_search("typescript adoption 2024")  →  success  298ms  [parallel]
  * │  └─ calculator("500 * 0.62 * 0.40")  →  cache hit  0ms
- * ├─ Step 2  1,203ms  ·  180 tokens  ·  1 call
- * │  └─ file_reader("examples/context.md")  →  success  4ms
  * └─ Final answer  (487 tokens out)
  * ```
  */
@@ -72,19 +65,13 @@ function renderStep(step: AgentStep, isLast: boolean, registry: ToolRegistry | u
 
   const callById = new Map<string, ToolCall>(step.toolCalls.map((c) => [c.id, c]));
 
-  // Build a set of call IDs that ran in a level with siblings, for the
-  // [parallel] annotation. A call is parallel if its level has >1 member.
-  //
-  // We resolve tool names → call IDs level by level, consuming each matched
-  // call exactly once (via a remaining-calls list per level). This prevents
-  // a tool called in multiple levels from having its sequential calls
-  // incorrectly marked [parallel] because the same name appears in a
-  // parallel level elsewhere in the same step.
+  // Collect IDs of calls that ran alongside siblings in a level (for [parallel] tag).
+  // Consume each match once per level so the same tool name in two levels doesn't
+  // bleed - a sequential call shouldn't be tagged [parallel] because its tool
+  // also appeared in a different parallel level.
   const parallelCallIds = new Set<string>();
   for (const level of step.parallelLevels) {
     if (level.length > 1) {
-      // Track which calls have already been assigned to an earlier level
-      // so duplicate tool names across levels don't bleed into each other.
       const remaining = [...step.toolCalls];
       for (const toolName of level) {
         const idx = remaining.findIndex((c) => c.toolName === toolName);
@@ -131,35 +118,20 @@ function renderResult(
 }
 
 /**
- * Produces a short human-readable label for a tool call's input.
- *
- * Resolution order:
- * 1. `tool.summarize(validatedInput)` - authoritative, per-tool hook.
- * 2. First field whose value is a string - covers the common single-query
- *    pattern (`web_search.query`, `calculator.expression`, `file_reader.path`).
- * 3. Compact JSON snippet capped at 40 characters - universal fallback.
- *
- * The registry is optional; without it, only steps 2 and 3 are available.
- * The hook receives `rawInput` (the model's unvalidated output) because
- * `summarize` is called during rendering, not during execution - the
- * validated input is no longer available at this point. Well-typed tools
- * validate their own input in `execute`, so `rawInput` matches the schema
- * for any call that succeeded.
+ * Short human-readable label for a tool call's input.
+ * Tries tool.summarize() first, then falls back to summarizeFallback().
+ * Receives rawInput because the validated input isn't available at render time.
  */
 function summarize(call: ToolCall, registry: ToolRegistry | undefined): string {
   if (registry !== undefined) {
     const tool = registry.get(call.toolName);
     if (tool?.summarize !== undefined) {
       try {
-        // The registry stores tools as ToolDefinition<ZodTypeAny, ZodTypeAny>,
-        // erasing the concrete input type. At this point summarize is typed as
-        // (input: ZodInfer<ZodTypeAny>) => string, which TypeScript cannot verify
-        // rawInput satisfies - hence 'as never' to satisfy the call. The cast is
-        // safe in practice: summarize is only called here, and rawInput matches
-        // the schema for any call that reached the trace (validated before execute).
+        // Registry erases the concrete input type to ToolDefinition<ZodTypeAny>.
+        // Cast is safe: rawInput matches the schema for any call that reached the trace.
         return truncate(tool.summarize(call.rawInput as never), 40);
       } catch {
-        // A buggy summarize hook must not crash the renderer.
+        // buggy summarize hook - fall through to heuristic
       }
     }
   }
@@ -168,16 +140,9 @@ function summarize(call: ToolCall, registry: ToolRegistry | undefined): string {
 }
 
 /**
- * Best-effort input summarization without a tool registry.
- *
- * Resolution order:
- * 1. Well-known primary-field names in priority order: query, expression,
- *    path, url, id, name. These cover the built-in tools and the common
- *    single-identifier patterns in custom tools.
- * 2. First field whose value is a string - covers tools whose primary
- *    field doesn't match the well-known list.
- * 3. Compact JSON snippet capped at 40 characters - universal fallback
- *    for numeric, boolean, or array-primary inputs.
+ * Heuristic fallback when no summarize hook is available.
+ * Checks well-known field names (query, expression, path, url, id, name),
+ * then first string field, then compact JSON.
  */
 function summarizeFallback(input: unknown): string {
   if (input === null || input === undefined) return "";
@@ -185,12 +150,10 @@ function summarizeFallback(input: unknown): string {
 
   if (typeof input === "object" && !Array.isArray(input)) {
     const record = input as Record<string, unknown>;
-    // Prefer well-known primary-field names over arbitrary first-key order.
     for (const key of ["query", "expression", "path", "url", "id", "name"]) {
       const val = record[key];
       if (typeof val === "string") return truncate(JSON.stringify(val), 40);
     }
-    // Fall through to first string field of whatever order the object has.
     for (const key of Object.keys(record)) {
       const val = record[key];
       if (typeof val === "string") return truncate(JSON.stringify(val), 40);

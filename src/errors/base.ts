@@ -14,9 +14,7 @@ export abstract class LiminalError extends Error {
     public override readonly cause?: unknown,
   ) {
     super(message);
-    // Required when extending built-in classes in TypeScript compiled to ES5/ES6:
-    // the prototype chain is broken by the transpiled super() call. Setting it
-    // explicitly restores `instanceof` behaviour for all subclasses.
+    // Restores instanceof for subclasses - broken by transpiled super() on built-ins.
     Object.setPrototypeOf(this, new.target.prototype);
     this.name = this.constructor.name;
   }

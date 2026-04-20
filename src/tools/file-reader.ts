@@ -43,9 +43,10 @@ export const fileReaderTool: ToolDefinition<typeof inputSchema, typeof outputSch
     "Large files are automatically truncated - check the truncated field in the response.",
   inputSchema,
   outputSchema,
-  execute: async ({ path: rawPath, encoding, maxBytes }) => {
+  execute: async ({ path: rawPath, encoding, maxBytes }, signal) => {
     const safePath = validatePath(rawPath);
 
+    signal?.throwIfAborted();
     const fileStat = await stat(safePath).catch(() => {
       throw new Error(`File not found or inaccessible: "${rawPath}"`);
     });
@@ -54,6 +55,7 @@ export const fileReaderTool: ToolDefinition<typeof inputSchema, typeof outputSch
       throw new Error(`"${rawPath}" is not a file`);
     }
 
+    signal?.throwIfAborted();
     const limitBytes = Math.min(maxBytes, MAX_FILE_SIZE_BYTES);
     const truncated = fileStat.size > limitBytes;
 
@@ -61,9 +63,8 @@ export const fileReaderTool: ToolDefinition<typeof inputSchema, typeof outputSch
     const slice = truncated ? buffer.subarray(0, limitBytes) : buffer;
     const content = encoding === "base64" ? slice.toString("base64") : slice.toString("utf-8");
 
-    // For base64, appending the truncation marker to the encoded payload
-    // corrupts the base64 stream and makes it non-decodable. The marker
-    // belongs in the content only for utf-8 text output.
+    // Appending a truncation marker to a base64 payload corrupts it - marker
+    // only makes sense for utf-8 text.
     const contentWithMarker =
       truncated && encoding !== "base64"
         ? content + `\n\n[... file truncated after ${String(limitBytes)} bytes ...]`

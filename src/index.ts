@@ -4,11 +4,11 @@
  * Public API. Everything not exported here is an internal detail.
  *
  * ```ts
- * import { Agent, ToolRegistry, calculatorTool } from "liminal";
+ * import { Agent, ToolRegistry, calculatorTool } from "@bonnie-mcconnell/liminal";
  *
  * const agent = new Agent(
  *   new ToolRegistry().register(calculatorTool),
- *   { model: "claude-opus-4-6" },
+ *   { model: "claude-haiku-4-5-20251001" },
  * );
  *
  * const result = await agent.run("What is sqrt(1764)?");

@@ -50,7 +50,7 @@ function emit(record: LogEvent): void {
  * @example
  * ```ts
  * const log = createLogger("run_abc123");
- * log.info("agent.started", { model: "claude-opus-4-6" });
+ * log.info("agent.started", { model: "claude-haiku-4-5-20251001" });
  * ```
  */
 export function createLogger(runId: string, context: Record<string, unknown> = {}): Logger {

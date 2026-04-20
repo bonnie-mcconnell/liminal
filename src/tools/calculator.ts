@@ -153,10 +153,7 @@ class Parser {
       return value;
     }
 
-    // The -? in the regex is dead code: parseUnary() always consumes a
-    // leading minus before reaching parsePrimary, so this path only ever
-    // sees unsigned numbers. It is harmless and left in place to match
-    // the standard number-literal grammar unambiguously.
+    // -? is dead here - parseUnary() consumes any leading minus before we arrive.
     const numMatch = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(this.src.slice(this.pos));
     if (numMatch !== null) {
       this.pos += numMatch[0].length;

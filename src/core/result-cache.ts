@@ -21,6 +21,17 @@ import { LruCache } from "./lru-cache.js";
  */
 export interface Cache {
   /**
+   * Pre-registers a tool's cache capacity. Call this once per tool before
+   * any agent run writes to the cache. Subsequent calls for the same tool
+   * are no-ops - capacity is fixed at first registration.
+   *
+   * This separates cache configuration (a one-time concern at startup) from
+   * cache writes (a per-call concern at runtime), so `set()` doesn't need to
+   * carry capacity as a parameter on every invocation.
+   */
+  configure(toolName: string, maxEntries: number): void;
+
+  /**
    * Returns the cached entry for `(toolName, input, vary)`, or `undefined`
    * on a miss or after TTL expiry.
    */
@@ -28,13 +39,9 @@ export interface Cache {
 
   /**
    * Stores `output` under the canonical key for `(toolName, input, vary)`.
+   * Call `configure()` first to set the LRU capacity for this tool.
    *
-   * @param ttlMs       Entry lifetime in milliseconds.
-   * @param maxEntries  LRU capacity for this tool's store. Only the value
-   *                    from the **first** write for a given `toolName` is
-   *                    used; subsequent writes with a different value are
-   *                    silently ignored. Register tools and start agents in
-   *                    the correct order to avoid surprises.
+   * @param ttlMs  Entry lifetime in milliseconds.
    */
   set(
     toolName: string,
@@ -42,7 +49,6 @@ export interface Cache {
     vary: readonly string[],
     output: unknown,
     ttlMs: number,
-    maxEntries: number,
   ): void;
 
   /** Returns hit/miss statistics for one tool, or `undefined` if never written. */
@@ -76,37 +82,30 @@ export interface ResultCacheStats {
 /**
  * Content-addressable, in-process result cache for tool outputs.
  *
- * **Key scheme** - the cache key is the first 16 hex characters (64 bits) of
- * the SHA-256 digest of the canonicalised input. "Canonicalised" means object
- * keys are sorted recursively, so `{a:1,b:2}` and `{b:2,a:1}` always produce
- * the same digest. Arrays are order-sensitive. The `vary` strings are sorted
- * and appended after a separator so they cannot collide with input content.
+ * **Key scheme** - the cache key is the first 16 hex chars (64 bits) of the
+ * SHA-256 digest of the canonicalised input. Object keys are sorted
+ * recursively, so `{a:1,b:2}` and `{b:2,a:1}` always produce the same key.
+ * The `vary` strings are appended after a `|` separator (not valid JSON) so
+ * they can't collide with input content. Collision probability: ~2.7×10⁻⁸
+ * for 10⁶ distinct inputs.
  *
- * A 64-bit prefix gives a collision probability of ≈ 2.7 × 10⁻⁸ for 10⁶
- * distinct inputs - far below any practical threshold for tool-call caching.
- * SHA-256 is used rather than a non-cryptographic hash (djb2, FNV, etc.)
- * because its avalanche property guarantees that a one-bit difference in input
- * produces an unrecognisably different digest. Non-cryptographic hashes can
- * cluster on structured data such as JSON.
+ * **Per-tool isolation** - each tool gets its own `LruCache` via `configure()`,
+ * so a high-traffic tool can't evict results belonging to others.
  *
- * **Per-tool isolation** - each tool gets its own `LruCache` instance so a
- * tool that generates many distinct inputs cannot evict entries belonging to
- * other tools. Capacity is set on the first write for a given tool name and
- * is immutable thereafter.
- *
- * **Sharing across agents** - inject the same `ResultCache` (or any `Cache`
- * implementation) into multiple `Agent` constructors to deduplicate identical
- * tool calls across concurrent or sequential runs:
- *
- * ```ts
- * const cache = new ResultCache();
- * const a1 = new Agent(registry, config, { cache });
- * const a2 = new Agent(registry, config, { cache });
- * ```
+ * **Sharing across agents** - inject the same `ResultCache` into multiple
+ * `Agent` constructors to deduplicate identical calls across runs.
  */
 export class ResultCache implements Cache {
   // Each tool gets its own LRU so no single tool can starve the others.
   private readonly stores = new Map<string, LruCache<CachedEntry>>();
+  // Capacity is fixed at configure() time and cannot change afterwards.
+  private readonly capacities = new Map<string, number>();
+
+  configure(toolName: string, maxEntries: number): void {
+    if (this.capacities.has(toolName)) return; // already configured - no-op
+    this.capacities.set(toolName, maxEntries);
+    this.stores.set(toolName, new LruCache<CachedEntry>(maxEntries));
+  }
 
   get(toolName: string, input: unknown, vary: readonly string[]): CachedEntry | undefined {
     return this.stores.get(toolName)?.get(cacheKey(input, vary));
@@ -118,15 +117,13 @@ export class ResultCache implements Cache {
     vary: readonly string[],
     output: unknown,
     ttlMs: number,
-    maxEntries: number,
   ): void {
     let store = this.stores.get(toolName);
     if (store === undefined) {
-      // Capacity is fixed here at the first write. The LRU instance lives for
-      // the lifetime of this ResultCache - capacity cannot be changed later.
-      // Tools should be registered (and their policies therefore known) before
-      // the first agent run writes to the cache.
-      store = new LruCache<CachedEntry>(maxEntries);
+      // Fallback when configure() was never called - use a default capacity.
+      // This keeps the cache functional even for tools registered after agent
+      // construction, at the cost of not honouring a custom maxEntries.
+      store = new LruCache<CachedEntry>(512);
       this.stores.set(toolName, store);
     }
     store.set(cacheKey(input, vary), { output, cachedAt: new Date() }, ttlMs);
@@ -160,21 +157,16 @@ export class ResultCache implements Cache {
 // ---------------------------------------------------------------------------
 
 /**
- * Derives a stable, order-independent cache key from `input` and `vary`.
+ * Derives a stable, order-independent 16-char hex cache key from `input` and `vary`.
  *
- * The key is the first 16 hex characters (64 bits) of the SHA-256 digest of:
+ * Key = SHA-256(canonicalize(input) + "|" + vary.sort().join(":"))[0:16]
  *
- *   canonicalize(input) + "|" + vary.sort().join(":")
- *
- * The `|` separator is not valid JSON, so the vary section cannot be confused
- * with input content. The vary strings themselves are sorted so
- * `["b","a"]` and `["a","b"]` produce the same key.
- *
- * 64-bit prefix collision probability for N distinct inputs (birthday bound):
- *   P ≈ N² / (2 × 2⁶⁴) ≈ 2.7 × 10⁻⁸ for N = 10⁶
- *
- * If you need a stronger guarantee (e.g. the cache is shared across security
- * boundaries), return the full 64-character hex digest instead.
+ * The `|` separator is not valid JSON, so vary strings can't collide with
+ * input content. 16 hex chars = 64-bit prefix: P(collision) ≈ 2.7×10⁻⁸ at 10⁶
+ * inputs - acceptable for tool-call caching where a false positive serves stale
+ * data rather than causing corruption. If you need stronger collision resistance
+ * (e.g., a shared Redis cache across many agents processing millions of calls
+ * per day), use the full 64-char digest and adjust your storage key accordingly.
  */
 export function cacheKey(input: unknown, vary: readonly string[]): string {
   const payload = canonicalize(input) + "|" + [...vary].sort().join(":");
@@ -184,16 +176,13 @@ export function cacheKey(input: unknown, vary: readonly string[]): string {
 /**
  * Produces an order-independent JSON-like string for `value`.
  *
- * Rules:
- * - Primitive values (string, number, boolean, null, undefined) are serialised
- *   with `JSON.stringify` so they are unambiguous and round-trip safely.
- * - Object keys are sorted at every nesting level, so insertion order is
- *   irrelevant: `{a:1,b:2}` and `{b:2,a:1}` canonicalise identically.
- * - Arrays are order-sensitive: `[1,2]` and `[2,1]` produce different strings.
- *   This matches the semantic expectation - array element order is significant.
- * - Circular references will cause a stack overflow. This is safe in practice
- *   because tool inputs come from JSON-parsed API responses and Zod-validated
- *   schemas, neither of which can produce circular object graphs.
+ * Object keys are sorted at every nesting level so `{a:1,b:2}` and `{b:2,a:1}`
+ * canonicalise identically. Arrays are order-sensitive. Primitives use
+ * `JSON.stringify`. Circular references will stack-overflow - safe in practice
+ * because tool inputs come from JSON-parsed, Zod-validated API responses which
+ * cannot contain circular structures. If you pass custom tool outputs to the
+ * cache that contain circular references, use the `strategy: "no-cache"` policy
+ * instead of working around this function.
  */
 export function canonicalize(value: unknown): string {
   if (value === null) return "null";

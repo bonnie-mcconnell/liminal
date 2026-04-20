@@ -41,12 +41,12 @@ export const webSearchTool: ToolDefinition<typeof inputSchema, typeof outputSche
     "Prefer specific queries over broad ones - 'TypeScript strict mode benefits' over 'TypeScript'.",
   inputSchema,
   outputSchema,
-  execute: async ({ query, maxResults }) => {
+  execute: async ({ query, maxResults }, signal) => {
     const apiKey = process.env["BRAVE_SEARCH_API_KEY"];
 
     const results =
       apiKey !== undefined
-        ? await searchWithBrave(query, maxResults, apiKey)
+        ? await searchWithBrave(query, maxResults, apiKey, signal)
         : mockSearch(query, maxResults);
 
     return { results, query, totalResults: results.length };
@@ -80,12 +80,14 @@ async function searchWithBrave(
   query: string,
   count: number,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<SearchResult[]> {
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
   url.searchParams.set("q", query);
   url.searchParams.set("count", String(count));
 
   const response = await fetch(url.toString(), {
+    ...(signal !== undefined ? { signal } : {}),
     headers: {
       Accept: "application/json",
       "Accept-Encoding": "gzip",

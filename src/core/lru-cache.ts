@@ -1,11 +1,3 @@
-/**
- * Generic LRU cache backed by a doubly-linked list and a Map.
- *
- * The Map gives O(1) lookup; the list maintains recency order without
- * shifting. On every hit the accessed node moves to the head; on overflow
- * the tail (least recently used) is evicted.
- */
-
 interface Node<V> {
   key: string;
   value: V;
@@ -24,11 +16,9 @@ export interface LruCacheStats {
 }
 
 /**
- * Generic LRU cache: O(1) get and set via a doubly-linked list + Map.
- *
- * On access the touched node moves to the head. On overflow the tail
- * (least recently used) is evicted. Entries with a TTL are lazily
- * expired on the next access after their deadline passes.
+ * Generic LRU cache: O(1) get/set via a doubly-linked list + Map.
+ * Accessed nodes move to the head; the tail is evicted at capacity.
+ * TTL entries are lazily expired on next access after their deadline.
  */
 export class LruCache<V> {
   private readonly map = new Map<string, Node<V>>();
@@ -101,11 +91,19 @@ export class LruCache<V> {
     if (node !== undefined) this.remove(node);
   }
 
-  /** Empties the cache and resets all counters. */
+  /** Evicts all cached entries but preserves hit/miss/eviction counters. */
   clear(): void {
     this.map.clear();
     this.head = null;
     this.tail = null;
+  }
+
+  /**
+   * Resets hit, miss, eviction, and expiration counters to zero.
+   * Call this when you want to measure cache performance over a specific window
+   * without evicting entries (e.g., between agent runs on a shared cache).
+   */
+  resetStats(): void {
     this.hits = 0;
     this.misses = 0;
     this.evictions = 0;
