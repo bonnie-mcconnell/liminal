@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { webSearchTool } from "../../src/tools/web-search.js";
+import { ToolTimeoutError } from "../../src/errors/index.js";
 
 function mockFetch(response: { ok: boolean; status?: number; body?: unknown }): void {
   vi.stubGlobal(
@@ -189,6 +190,26 @@ describe("webSearchTool", () => {
       if (parsed.success) {
         expect(parsed.data.maxResults).toBe(5);
       }
+    });
+  });
+
+  describe("policy", () => {
+    const retry = webSearchTool.policy?.retry;
+
+    it("retries on ToolTimeoutError", () => {
+      expect(retry?.shouldRetry(new ToolTimeoutError("web_search", 1000), 1)).toBe(true);
+    });
+
+    it("retries on fetch TypeError (network failure)", () => {
+      expect(retry?.shouldRetry(new TypeError("fetch failed: ECONNREFUSED"), 1)).toBe(true);
+    });
+
+    it("retries on 429 rate-limit error", () => {
+      expect(retry?.shouldRetry(new Error("Request failed with status 429"), 1)).toBe(true);
+    });
+
+    it("does not retry on non-transient errors", () => {
+      expect(retry?.shouldRetry(new Error("404 Not Found"), 1)).toBe(false);
     });
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchTool } from "../../src/tools/fetch.js";
 
 // ---------------------------------------------------------------------------
-// Mock the global fetch using arrayBuffer() - matches the tool implementation
+// Mock the global fetch using arrayBuffer() — matches the tool implementation
 // ---------------------------------------------------------------------------
 
 function mockFetch(
@@ -161,6 +161,103 @@ describe("fetchTool", () => {
     it("does not retry on non-transient errors", () => {
       const retry = fetchTool.policy?.retry;
       expect(retry?.shouldRetry(new Error("400 Bad Request"), 1)).toBe(false);
+    });
+  });
+
+  describe("AbortSignal forwarding", () => {
+    it("forwards the signal to the underlying fetch call", async () => {
+      const controller = new AbortController();
+      const encoded = new TextEncoder().encode("ok");
+      const spy = vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        url: "https://example.com/",
+        headers: {
+          get: () => "text/plain",
+          forEach: (cb: (v: string, k: string) => void) => cb("text/plain", "content-type"),
+        },
+        arrayBuffer: async () => encoded.buffer,
+      });
+      vi.stubGlobal("fetch", spy);
+
+      await fetchTool.execute(
+        { url: "https://example.com/", method: "GET", maxBytes: 500_000 },
+        controller.signal,
+      );
+
+      expect(spy).toHaveBeenCalledWith(
+        "https://example.com/",
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+
+    it("does not set signal on the fetch init when none is provided", async () => {
+      const encoded = new TextEncoder().encode("ok");
+      const spy = vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        url: "https://example.com/",
+        headers: {
+          get: () => "text/plain",
+          forEach: (cb: (v: string, k: string) => void) => cb("text/plain", "content-type"),
+        },
+        arrayBuffer: async () => encoded.buffer,
+      });
+      vi.stubGlobal("fetch", spy);
+
+      await fetchTool.execute({ url: "https://example.com/", method: "GET", maxBytes: 500_000 });
+
+      const calls = spy.mock.calls as Array<[string, RequestInit]>;
+      const init = calls[0]?.[1];
+      expect(init).not.toHaveProperty("signal");
+    });
+
+    it("rejects with an AbortError when the signal fires before the fetch resolves", async () => {
+      const controller = new AbortController();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+          // Simulate fetch honouring the signal — throws DOMException on abort
+          return new Promise((_resolve, reject) => {
+            if (init.signal?.aborted === true) {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+              return;
+            }
+            init.signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          });
+        }),
+      );
+
+      controller.abort();
+
+      await expect(
+        fetchTool.execute(
+          { url: "https://example.com/", method: "GET", maxBytes: 500_000 },
+          controller.signal,
+        ),
+      ).rejects.toThrow("aborted");
+    });
+  });
+
+  describe("encoding fallback", () => {
+    it("falls back to utf-8 when Content-Type specifies an unrecognised charset", async () => {
+      // Buffer.toString(encoding) throws when the encoding is unknown.
+      // The tool catches this and retries with utf-8.
+      mockFetch(200, "hello world", {
+        "content-type": "text/html; charset=not-a-real-encoding-xyz",
+      });
+
+      const result = await fetchTool.execute({
+        url: "https://example.com/",
+        method: "GET",
+        maxBytes: 500_000,
+      });
+
+      // Should not throw and should return something readable
+      expect(typeof result.body).toBe("string");
+      expect(result.status).toBe(200);
     });
   });
 });

@@ -68,7 +68,7 @@ describe("fileReaderTool", () => {
   });
 
   it("rejects Windows UNC paths on Windows (\\\\server\\share\\file)", async () => {
-    // On Windows, UNC paths (\\server\share\file) are absolute - path.isAbsolute()
+    // On Windows, UNC paths (\\server\share\file) are absolute — path.isAbsolute()
     // returns true for them, so our fix catches them. On Linux, backslashes have
     // no special meaning and the same string is treated as a relative path, which
     // resolves inside cwd and fails at the filesystem level (file not found).
@@ -84,7 +84,7 @@ describe("fileReaderTool", () => {
   });
 
   it("does not corrupt base64 output when the file is truncated", async () => {
-    // Appending the truncation marker to a base64-encoded payload corrupts it -
+    // Appending the truncation marker to a base64-encoded payload corrupts it —
     // the marker bytes get interpreted as base64 data during decoding.
     // When encoding is base64, the content must be a valid base64 string.
     const result = await read(".test-tmp-file-reader/big.txt", {
@@ -92,11 +92,53 @@ describe("fileReaderTool", () => {
       encoding: "base64",
     });
     expect(result.truncated).toBe(true);
-    // The content must be decodable as pure base64 - no truncation marker appended.
+    // The content must be decodable as pure base64 — no truncation marker appended.
     expect(() => Buffer.from(result.content, "base64")).not.toThrow();
     // And it must not contain the marker string
     expect(result.content).not.toContain("[... file truncated");
     // The decoded length must match the requested byte limit
     expect(Buffer.from(result.content, "base64").length).toBe(50);
+  });
+
+  describe("retry policy", () => {
+    const retry = fileReaderTool.policy?.retry;
+
+    it("retries on EMFILE (too many open files)", () => {
+      expect(retry?.shouldRetry(new Error("EMFILE: too many open files"), 1)).toBe(true);
+    });
+
+    it("retries on EAGAIN (resource temporarily unavailable)", () => {
+      expect(retry?.shouldRetry(new Error("EAGAIN: resource temporarily unavailable"), 1)).toBe(
+        true,
+      );
+    });
+
+    it("does not retry on ENOENT or other errors", () => {
+      expect(retry?.shouldRetry(new Error("ENOENT: no such file or directory"), 1)).toBe(false);
+    });
+  });
+
+  describe("AbortSignal", () => {
+    it("throws when the signal is already aborted before any I/O", async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        fileReaderTool.execute(
+          { path: "README.md", encoding: "utf-8", maxBytes: 100_000 },
+          controller.signal,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("succeeds with a non-aborted signal", async () => {
+      const controller = new AbortController();
+      const result = await fileReaderTool.execute(
+        { path: "README.md", encoding: "utf-8", maxBytes: 100_000 },
+        controller.signal,
+      );
+      expect(result.truncated).toBe(false);
+      expect(typeof result.content).toBe("string");
+    });
   });
 });

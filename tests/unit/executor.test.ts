@@ -407,7 +407,7 @@ describe("ToolExecutor", () => {
   describe("never throws", () => {
     it("returns an error result when shouldRetry itself throws", async () => {
       // If a custom policy's shouldRetry function throws, that must not
-      // propagate out of execute() - it would break the never-throws contract.
+      // propagate out of execute() — it would break the never-throws contract.
       // The fix: wrap shouldRetry in try/catch and treat a crash as "don't retry".
       const registry = new ToolRegistry();
       registry.register({
@@ -434,7 +434,7 @@ describe("ToolExecutor", () => {
         },
       });
       const executor = new ToolExecutor(registry, new ResultCache(), createLogger("test"));
-      // Must not throw - must return a ToolResult with status: "error"
+      // Must not throw — must return a ToolResult with status: "error"
       const result = await executor.execute({
         id: "c1",
         toolName: "bad_policy",
@@ -835,5 +835,164 @@ describe("computeDelay", () => {
       shouldRetry: () => true,
     };
     expect(computeDelay(policy, 1)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal support
+// ---------------------------------------------------------------------------
+
+describe("AbortSignal", () => {
+  const noRetryPolicy = {
+    timeoutMs: 2_000,
+    retry: {
+      maxAttempts: 1,
+      backoff: "none" as const,
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+      jitterMs: 0,
+      shouldRetry: () => false,
+    },
+    cache: { strategy: "no-cache" as const },
+  };
+
+  it("returns a ToolExecutionError immediately when signal is already aborted before execute()", async () => {
+    const tool = makeTool("t", async () => ({ result: 42 }), noRetryPolicy);
+    const executor = makeExecutor([tool]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await executor.execute(
+      { id: "c1", toolName: "t", rawInput: { value: 1 } },
+      controller.signal,
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error).toBeInstanceOf(ToolExecutionError);
+    expect(result.attempts).toBe(0);
+  });
+
+  it("emits a 'failed' event with attempts: 0 when aborted pre-dispatch", async () => {
+    const tool = makeTool("t", async () => ({ result: 1 }), noRetryPolicy);
+    const { executor, events } = makeExecutorWithEvents([tool]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await executor.execute({ id: "c1", toolName: "t", rawInput: { value: 1 } }, controller.signal);
+
+    const failed = events.find((e) => e.type === "failed");
+    expect(failed).toBeDefined();
+    expect(failed?.attempts).toBe(0);
+  });
+
+  it("aborts mid-execution via the signal race — tool completes but signal fires first", async () => {
+    // Tool takes 100ms; signal fires at 20ms. The abort race should win.
+    const tool = makeTool(
+      "slow",
+      async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        return { result: 1 };
+      },
+      { ...noRetryPolicy, timeoutMs: 5_000 },
+    );
+    const executor = makeExecutor([tool]);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+
+    const result = await executor.execute(
+      { id: "c1", toolName: "slow", rawInput: { value: 0 } },
+      controller.signal,
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error).toBeInstanceOf(ToolExecutionError);
+  });
+
+  it("does not affect execution when no signal is passed", async () => {
+    const tool = makeTool("t", async () => ({ result: 7 }), noRetryPolicy);
+    const executor = makeExecutor([tool]);
+
+    const result = await executor.execute({ id: "c1", toolName: "t", rawInput: { value: 0 } });
+
+    expect(result.status).toBe("success");
+  });
+
+  it("aborted signal between retries stops the next attempt", async () => {
+    // Tool always fails; shouldRetry returns true; but signal fires before attempt 2.
+    const controller = new AbortController();
+    let calls = 0;
+    const tool = makeTool(
+      "flaky",
+      async () => {
+        calls++;
+        // Abort after first call so the retry-loop check catches it
+        controller.abort();
+        throw new Error("transient");
+      },
+      {
+        timeoutMs: 2_000,
+        retry: {
+          maxAttempts: 3,
+          backoff: "none" as const,
+          baseDelayMs: 0,
+          maxDelayMs: 0,
+          jitterMs: 0,
+          shouldRetry: () => true,
+        },
+        cache: { strategy: "no-cache" as const },
+      },
+    );
+    const executor = makeExecutor([tool]);
+
+    const result = await executor.execute(
+      { id: "c1", toolName: "flaky", rawInput: { value: 0 } },
+      controller.signal,
+    );
+
+    // Should have stopped after the abort, not retried to exhaustion
+    expect(calls).toBe(1);
+    expect(result.status).toBe("error");
+  });
+
+  it("executes the sleep delay between retry attempts when baseDelayMs > 0", async () => {
+    // Use a 5ms delay — fast enough not to slow the suite, long enough for
+    // Date.now() to measure reliably. This covers the sleep() code path.
+    let calls = 0;
+    const tool = makeTool(
+      "delayed_retry",
+      async () => {
+        calls++;
+        if (calls < 2) throw new Error("transient");
+        return { result: 99 };
+      },
+      {
+        timeoutMs: 5_000,
+        retry: {
+          maxAttempts: 2,
+          backoff: "linear" as const,
+          baseDelayMs: 5,
+          maxDelayMs: 10,
+          jitterMs: 0,
+          shouldRetry: () => true,
+        },
+        cache: { strategy: "no-cache" as const },
+      },
+    );
+    const executor = makeExecutor([tool]);
+    const start = Date.now();
+
+    const result = await executor.execute({
+      id: "c1",
+      toolName: "delayed_retry",
+      rawInput: { value: 0 },
+    });
+
+    const elapsed = Date.now() - start;
+    expect(result.status).toBe("success");
+    expect(calls).toBe(2);
+    // At least the baseDelayMs should have elapsed between attempts
+    expect(elapsed).toBeGreaterThanOrEqual(4); // 5ms - 1ms timing tolerance
   });
 });

@@ -157,4 +157,57 @@ describe("ToolRegistry", () => {
       expect(tools[0]?.input_schema.type).toBe("object");
     });
   });
+
+  describe("size", () => {
+    it("returns 0 for an empty registry", () => {
+      expect(new ToolRegistry().size).toBe(0);
+    });
+
+    it("increments with each registration", () => {
+      const registry = new ToolRegistry();
+      registry.register(simpleTool("a"));
+      expect(registry.size).toBe(1);
+      registry.register(simpleTool("b"));
+      expect(registry.size).toBe(2);
+    });
+
+    it("decrements after deregistration", () => {
+      const registry = new ToolRegistry();
+      registry.register(simpleTool("a")).register(simpleTool("b"));
+      registry.deregister("a");
+      expect(registry.size).toBe(1);
+    });
+  });
+
+  describe("[Symbol.iterator]", () => {
+    it("iterates over all registered tools", () => {
+      const registry = new ToolRegistry();
+      registry.register(simpleTool("x")).register(simpleTool("y"));
+      const names = [...registry].map((t) => t.name).sort();
+      expect(names).toEqual(["x", "y"]);
+    });
+
+    it("yields nothing for an empty registry", () => {
+      expect([...new ToolRegistry()]).toHaveLength(0);
+    });
+  });
+
+  describe("policy merging — partial content-hash override", () => {
+    it("merges individual cache fields against content-hash defaults when strategy is not overridden", () => {
+      // A tool that overrides only ttlMs without specifying strategy — should
+      // inherit the default content-hash strategy and merge only ttlMs.
+      const registry = new ToolRegistry();
+      registry.register({
+        ...simpleTool("alpha"),
+        policy: { cache: { ttlMs: 99_000 } as never },
+      });
+      const policy = registry.getPolicy("alpha");
+      expect(policy?.cache.strategy).toBe("content-hash");
+      if (policy?.cache.strategy === "content-hash") {
+        expect(policy.cache.ttlMs).toBe(99_000);
+        // maxEntries should fall through to the default, not be undefined
+        expect(policy.cache.maxEntries).toBeGreaterThan(0);
+      }
+    });
+  });
 });

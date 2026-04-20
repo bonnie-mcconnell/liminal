@@ -77,4 +77,63 @@ describe("schedule", () => {
   it("throws when two calls share the same ID", () => {
     expect(() => schedule([call("a", "tool_a"), call("a", "tool_b")])).toThrow(/Duplicate/);
   });
+
+  it("names the duplicate ID in the error message", () => {
+    expect(() => schedule([call("dup_id", "tool_a"), call("dup_id", "tool_b")])).toThrow(/dup_id/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invariant tests — properties that must hold for any valid acyclic input
+// ---------------------------------------------------------------------------
+
+/** Builds a deterministic acyclic graph via a simple LCG so tests are reproducible. */
+function randomAcyclicCalls(count: number, seed: number): ScheduledCall[] {
+  let s = seed;
+  const rand = () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0x100000000;
+  };
+  return Array.from({ length: count }, (_, i) => {
+    const id = `c${String(i)}`;
+    const toolName = `tool_${String(i)}`;
+    // Deps always point at earlier indices — guaranteed acyclic.
+    const depCount = i === 0 ? 0 : Math.floor(rand() * Math.min(3, i));
+    const depIds: string[] = [];
+    for (let d = 0; d < depCount; d++) {
+      const dep = `c${String(Math.floor(rand() * i))}`;
+      if (!depIds.includes(dep)) depIds.push(dep);
+    }
+    return { id, toolName, rawInput: {}, dependsOn: depIds };
+  });
+}
+
+describe("schedule invariants (20 random acyclic graphs)", () => {
+  it("every call appears exactly once across all levels", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const calls = randomAcyclicCalls(15, seed);
+      const levels = schedule(calls);
+      const allScheduled = levels.flat().map((c) => c.id);
+      expect(allScheduled.sort()).toEqual(calls.map((c) => c.id).sort());
+    }
+  });
+
+  it("no call is placed in a level before all its dependencies have completed", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const calls = randomAcyclicCalls(15, seed);
+      const levels = schedule(calls);
+      const done = new Set<string>();
+      for (const level of levels) {
+        for (const c of level) {
+          for (const dep of c.dependsOn) {
+            expect(
+              done.has(dep),
+              `${c.id} scheduled before dep ${dep} (seed ${String(seed)})`,
+            ).toBe(true);
+          }
+        }
+        for (const c of level) done.add(c.id);
+      }
+    }
+  });
 });

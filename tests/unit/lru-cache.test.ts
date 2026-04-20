@@ -102,13 +102,28 @@ describe("LruCache", () => {
   });
 
   describe("clear", () => {
-    it("empties the cache and resets stats", () => {
+    it("empties all entries but preserves hit/miss counters", () => {
       const cache = new LruCache<number>(10);
       cache.set("a", 1);
-      cache.get("a");
+      cache.get("a"); // 1 hit
       cache.clear();
       expect(cache.stats().currentSize).toBe(0);
+      // Counters survive clear() so historical stats aren't lost mid-run.
+      expect(cache.stats().hits).toBe(1);
+    });
+  });
+
+  describe("resetStats", () => {
+    it("zeroes all counters without evicting entries", () => {
+      const cache = new LruCache<number>(10);
+      cache.set("a", 1);
+      cache.get("a"); // 1 hit
+      cache.resetStats();
       expect(cache.stats().hits).toBe(0);
+      expect(cache.stats().misses).toBe(0);
+      expect(cache.stats().evictions).toBe(0);
+      // Entry is still present after resetStats.
+      expect(cache.get("a")).toBe(1);
     });
   });
 
@@ -126,6 +141,46 @@ describe("LruCache", () => {
 
     it("returns 0 hit rate before any access", () => {
       expect(new LruCache<number>(10).stats().hitRate).toBe(0);
+    });
+  });
+
+  describe("delete()", () => {
+    it("removes an existing entry", () => {
+      const cache = new LruCache<number>(10);
+      cache.set("k", 1);
+      cache.delete("k");
+      expect(cache.get("k")).toBeUndefined();
+      expect(cache.stats().currentSize).toBe(0);
+    });
+
+    it("is a no-op for a key that was never set", () => {
+      const cache = new LruCache<number>(10);
+      expect(() => cache.delete("nonexistent")).not.toThrow();
+      expect(cache.stats().currentSize).toBe(0);
+    });
+  });
+
+  describe("TTL expiry", () => {
+    it("lazily expires an entry whose TTL has passed on the next get()", async () => {
+      const cache = new LruCache<string>(10);
+      cache.set("k", "value", 1); // 1ms TTL
+
+      // Wait long enough for the TTL to pass
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(cache.get("k")).toBeUndefined();
+      expect(cache.stats().expirations).toBe(1);
+      expect(cache.stats().currentSize).toBe(0);
+    });
+
+    it("does not expire an entry whose TTL has not yet passed", async () => {
+      const cache = new LruCache<string>(10);
+      cache.set("k", "value", 10_000); // 10s TTL
+
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(cache.get("k")).toBe("value");
+      expect(cache.stats().expirations).toBe(0);
     });
   });
 });

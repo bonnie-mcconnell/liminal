@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { renderTrace } from "../../src/observability/trace.js";
+import { ToolRegistry } from "../../src/core/registry.js";
 import type { ExecutionTrace, AgentStep, ToolResult } from "../../src/types/index.js";
 
 // ---------------------------------------------------------------------------
@@ -279,15 +281,15 @@ describe("renderTrace", () => {
       const step = makeStep(
         0,
         [
-          successResult("web_search", "c1"), // level 0 - alone, not parallel
-          successResult("web_search", "c2"), // level 1 - parallel with calculator
-          successResult("calculator", "c3"), // level 1 - parallel with web_search
+          successResult("web_search", "c1"), // level 0 — alone, not parallel
+          successResult("web_search", "c2"), // level 1 — parallel with calculator
+          successResult("calculator", "c3"), // level 1 — parallel with web_search
         ],
         { parallelLevels: [["web_search"], ["web_search", "calculator"]] },
       );
       const output = renderTrace(makeTrace([step, finalStep(1)]));
       const toolLines = output.split("\n").filter((l) => l.includes("→"));
-      // Exactly 2 of the 3 tool lines must carry [parallel] - not all 3.
+      // Exactly 2 of the 3 tool lines must carry [parallel] — not all 3.
       const parallelCount = toolLines.filter((l) => l.includes("[parallel]")).length;
       expect(parallelCount).toBe(2);
       // And at least one tool line must NOT have [parallel] (the sequential web_search).
@@ -348,6 +350,73 @@ describe("renderTrace", () => {
       const output = renderTrace(makeTrace([]));
       expect(output.trim()).toBeTruthy();
       expect(output).toContain("run_test123");
+    });
+  });
+
+  describe("summarize hook and fallback", () => {
+    it("falls back to heuristic when the registry's summarize hook throws", () => {
+      const registry = new ToolRegistry();
+      registry.register({
+        name: "bad_summarize",
+        description: "test",
+        inputSchema: z.object({ query: z.string() }),
+        outputSchema: z.object({ result: z.string() }),
+        execute: async () => ({ result: "" }),
+        summarize: () => {
+          throw new Error("summarize exploded");
+        },
+      });
+
+      const step: AgentStep = {
+        stepId: "s0",
+        iteration: 0,
+        modelResponse: "",
+        toolCalls: [{ id: "c1", toolName: "bad_summarize", rawInput: { query: "hello" } }],
+        toolResults: [successResult("bad_summarize", "c1")],
+        usage: makeUsage(),
+        durationMs: 100,
+        parallelLevels: [],
+      };
+
+      // Should not throw — the renderer catches and falls back to heuristic.
+      // The heuristic finds "query" and uses "hello" as the label.
+      const output = renderTrace(makeTrace([step, finalStep(1)]), registry);
+      expect(output).toContain("bad_summarize");
+      expect(output).toContain("hello");
+    });
+
+    it("falls back to first string field when input has no well-known key", () => {
+      // Input has only an unknown field — heuristic should pick the first string value.
+      const step: AgentStep = {
+        stepId: "s0",
+        iteration: 0,
+        modelResponse: "",
+        toolCalls: [{ id: "c1", toolName: "t", rawInput: { obscureField: "myvalue" } }],
+        toolResults: [successResult("t", "c1")],
+        usage: makeUsage(),
+        durationMs: 100,
+        parallelLevels: [],
+      };
+
+      const output = renderTrace(makeTrace([step, finalStep(1)]));
+      expect(output).toContain("myvalue");
+    });
+
+    it("falls back to JSON snippet when input has no string fields", () => {
+      // Input is all-numeric — heuristic falls through to JSON stringify.
+      const step: AgentStep = {
+        stepId: "s0",
+        iteration: 0,
+        modelResponse: "",
+        toolCalls: [{ id: "c1", toolName: "t", rawInput: { count: 42 } }],
+        toolResults: [successResult("t", "c1")],
+        usage: makeUsage(),
+        durationMs: 100,
+        parallelLevels: [],
+      };
+
+      const output = renderTrace(makeTrace([step, finalStep(1)]));
+      expect(output).toContain("t(");
     });
   });
 });

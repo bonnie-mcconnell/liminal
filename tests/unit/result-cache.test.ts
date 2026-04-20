@@ -11,7 +11,8 @@ function set(
   output: unknown,
   vary: string[] = [],
 ) {
-  cache.set(tool, input, vary, output, TTL, MAX);
+  cache.configure(tool, MAX);
+  cache.set(tool, input, vary, output, TTL);
 }
 
 function get(cache: ResultCache, tool: string, input: unknown, vary: string[] = []) {
@@ -99,6 +100,25 @@ describe("cacheKey", () => {
     expect(cacheKey({ a: 1 }, [])).not.toBe(cacheKey({ a: 2 }, []));
     expect(cacheKey({ a: 1 }, [])).not.toBe(cacheKey({ b: 1 }, []));
   });
+
+  it("is order-independent at every nesting depth", () => {
+    // Property: recursively nested objects with shuffled keys must hash identically.
+    const pairs: Array<[unknown, unknown]> = [
+      [
+        { a: 1, b: 2 },
+        { b: 2, a: 1 },
+      ],
+      [
+        { x: "hi", y: [1, 2, 3] },
+        { y: [1, 2, 3], x: "hi" },
+      ],
+      [{ outer: { z: true, w: 0 } }, { outer: { w: 0, z: true } }],
+      [{ a: { b: { c: 1, d: 2 } } }, { a: { b: { d: 2, c: 1 } } }],
+    ];
+    for (const [a, b] of pairs) {
+      expect(cacheKey(a, [])).toBe(cacheKey(b, []));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -106,6 +126,26 @@ describe("cacheKey", () => {
 // ---------------------------------------------------------------------------
 
 describe("ResultCache", () => {
+  describe("configure()", () => {
+    it("is idempotent - calling twice with the same tool is a no-op", () => {
+      const cache = new ResultCache();
+      cache.configure("tool", 10);
+      cache.configure("tool", 999); // should not change capacity
+      // Write 11 entries - if capacity were 999, all would fit
+      for (let i = 0; i < 11; i++) {
+        cache.set("tool", { i }, [], `value-${i}`, TTL);
+      }
+      // Entry 0 should have been evicted (capacity is 10, not 999)
+      expect(cache.get("tool", { i: 0 }, [])).toBeUndefined();
+    });
+
+    it("fallback: set() without configure() uses default capacity of 512", () => {
+      const cache = new ResultCache();
+      cache.set("tool", { q: "x" }, [], "result", TTL);
+      expect(cache.get("tool", { q: "x" }, [])?.output).toBe("result");
+    });
+  });
+
   describe("canonical key computation", () => {
     it("returns the same entry for objects with different key insertion order", () => {
       const cache = new ResultCache();
@@ -158,7 +198,6 @@ describe("ResultCache", () => {
 
     it("does not mistake vary content for input content", () => {
       const cache = new ResultCache();
-      // Input {q:"a"} with vary ["b"] must not collide with input {q:"a|b"} no vary.
       set(cache, "tool", { q: "a" }, "with-vary", ["b"]);
       set(cache, "tool", { q: "a|b" }, "no-vary", []);
 
@@ -177,14 +216,14 @@ describe("ResultCache", () => {
 
     it("returns undefined after the TTL elapses", () => {
       const cache = new ResultCache();
-      cache.set("tool", {}, [], "value", 500, MAX);
+      cache.set("tool", {}, [], "value", 500);
       vi.advanceTimersByTime(501);
       expect(get(cache, "tool", {})).toBeUndefined();
     });
 
     it("returns the value before the TTL elapses", () => {
       const cache = new ResultCache();
-      cache.set("tool", {}, [], "value", 1_000, MAX);
+      cache.set("tool", {}, [], "value", 1_000);
       vi.advanceTimersByTime(999);
       expect(get(cache, "tool", {})?.output).toBe("value");
     });
@@ -248,11 +287,10 @@ describe("ResultCache", () => {
 
   describe("Cache interface compliance", () => {
     it("satisfies the Cache interface (compile-time verified by TypeScript, runtime smoke test)", () => {
-      // If ResultCache doesn't implement Cache, this assignment fails at compile time.
-      // The runtime test just confirms the methods exist and behave.
       const cache: import("../../src/core/result-cache.js").Cache = new ResultCache();
 
-      cache.set("t", { v: 1 }, [], "out", 60_000, 10);
+      cache.configure("t", 10);
+      cache.set("t", { v: 1 }, [], "out", 60_000);
       expect(cache.get("t", { v: 1 }, [])?.output).toBe("out");
       expect(cache.stats("t")).toBeDefined();
       cache.clear("t");

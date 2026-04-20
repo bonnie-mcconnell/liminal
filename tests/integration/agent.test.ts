@@ -203,7 +203,7 @@ describe("Agent - integration", () => {
 
   describe("maxConcurrency", () => {
     it("limits simultaneous tool calls within a level", async () => {
-      // 4 independent tools, maxConcurrency: 2 - at most 2 should run at once.
+      // 4 independent tools, maxConcurrency: 2 — at most 2 should run at once.
       const activeCount: number[] = []; // snapshot of active calls at each start
       let running = 0;
 
@@ -303,6 +303,14 @@ describe("Agent - integration", () => {
 
       // Without maxConcurrency, all 3 start simultaneously
       expect(Math.max(...activeCount)).toBe(3);
+    });
+
+    it("throws RangeError at construction time when maxConcurrency is 0", () => {
+      const registry = new ToolRegistry();
+      expect(() => new Agent(registry, { model: MODEL, maxConcurrency: 0 })).toThrow(RangeError);
+      expect(() => new Agent(registry, { model: MODEL, maxConcurrency: 0 })).toThrow(
+        /maxConcurrency must be at least 1/,
+      );
     });
   });
 
@@ -610,22 +618,27 @@ describe("Agent - integration", () => {
       expect(levels[1]).toEqual(["summarise"]);
     });
 
-    it("ignores dependencies on tools not called in the current turn", async () => {
-      // Graph declares summarise depends on 'missing_tool', but that tool
-      // isn't called this turn - summarise should run immediately.
+    it("ignores dependencies on registered tools that are not called in the current turn", async () => {
+      // Both tools are registered (so construction-time validation passes),
+      // but the mock only calls "echo" this turn. The declared dependency
+      // echo → echo2 has no matching call for echo2, so it is dropped and
+      // echo runs immediately in a single level rather than waiting for a
+      // call that never arrives.
       setResponses([
         toolResponse([{ id: "c1", name: "echo", input: { value: "x" } }]),
         textResponse("Done."),
       ]);
 
-      const result = await new Agent(new ToolRegistry().register(echoTool()), {
+      const registry = new ToolRegistry().register(echoTool("echo")).register(echoTool("echo2"));
+
+      const result = await new Agent(registry, {
         model: MODEL,
-        toolDependencies: { echo: ["missing_tool"] },
+        toolDependencies: { echo: ["echo2"] },
       }).run("Echo once.");
 
       expect(result.status).toBe("success");
       if (result.status !== "success") return;
-      // echo has no deps present this turn → one level
+      // echo2 is not called this turn, so echo has no live deps → one level
       expect(result.trace.steps[0]?.parallelLevels).toHaveLength(1);
     });
 
@@ -754,6 +767,88 @@ describe("Agent - integration", () => {
       if (toolResult?.status === "success") {
         expect(toolResult.attempts).toBe(2);
       }
+    });
+  });
+
+  describe("toolDependencies validation", () => {
+    it("throws at construction time when toolDependencies references an unregistered tool name", () => {
+      const registry = new ToolRegistry().register(echoTool());
+
+      expect(
+        () =>
+          new Agent(registry, {
+            model: MODEL,
+            toolDependencies: { echo: ["typo_tool"] },
+          }),
+      ).toThrow(/typo_tool/);
+    });
+
+    it("throws when the keyed tool itself is not registered", () => {
+      const registry = new ToolRegistry().register(echoTool());
+
+      expect(
+        () =>
+          new Agent(registry, {
+            model: MODEL,
+            toolDependencies: { nonexistent: ["echo"] },
+          }),
+      ).toThrow(/nonexistent/);
+    });
+
+    it("does not throw when all dependency names are registered", () => {
+      const registry = new ToolRegistry().register(echoTool("echo")).register(echoTool("echo2"));
+
+      expect(
+        () =>
+          new Agent(registry, {
+            model: MODEL,
+            toolDependencies: { echo2: ["echo"] },
+          }),
+      ).not.toThrow();
+    });
+  });
+
+  describe("abort()", () => {
+    it("returns a PlannerError result when aborted before the first API call", async () => {
+      setResponses([textResponse("should not appear")]);
+
+      const registry = new ToolRegistry();
+      const agent = new Agent(registry, { model: MODEL });
+
+      // Abort synchronously before awaiting run() — the loop checks the
+      // signal at the top of each iteration, so iteration 0 sees it aborted.
+      agent.abort();
+      const result = await agent.run("anything");
+
+      expect(result.status).toBe("error");
+      if (result.status !== "error") return;
+      expect(result.error.code).toBe("PLANNER_ERROR");
+      // No API calls should have been made — the abort check fires first.
+      expect(callCount()).toBe(0);
+    });
+
+    it("can run again after a previous run was aborted", async () => {
+      setResponses([textResponse("first answer")]);
+
+      const registry = new ToolRegistry();
+      const agent = new Agent(registry, { model: MODEL });
+
+      agent.abort();
+      const aborted = await agent.run("aborted task");
+      expect(aborted.status).toBe("error");
+
+      // Second run should work normally — abort() on a new run is not
+      // inherited from the previous one.
+      setResponses([textResponse("second answer")]);
+      const good = await agent.run("normal task");
+      expect(good.status).toBe("success");
+      if (good.status !== "success") return;
+      expect(good.output).toBe("second answer");
+    });
+
+    it("abort() is a no-op when no run is active", () => {
+      const agent = new Agent(new ToolRegistry(), { model: MODEL });
+      expect(() => agent.abort()).not.toThrow();
     });
   });
 });
