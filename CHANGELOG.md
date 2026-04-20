@@ -12,7 +12,7 @@
 
 **Docs: documented the cache key truncation tradeoff.** The `cacheKey` function truncates the SHA-256 digest to 16 hex chars (64 bits). The JSDoc now explains when the full 256-bit digest would be the right choice and how to get there. Added the same tradeoff to "What I'd do differently" in the README.
 
-6 new tests (316 → 322): `maxConcurrency: 0` guard, duplicate ID naming, `clear()` preserves counters, `resetStats()`, cacheKey nested-object invariants, scheduler ordering invariants over 20 random acyclic graphs.
+7 new tests (316 → 323): `maxConcurrency: 0` guard, duplicate ID naming, `clear()` preserves counters, `resetStats()`, cacheKey nested-object invariants, scheduler ordering invariants over 20 random acyclic graphs.
 
 ## [0.4.1] - 2026-04-19
 

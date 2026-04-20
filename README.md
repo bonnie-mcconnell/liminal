@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/bonnie-mcconnell/liminal/actions/workflows/ci.yml/badge.svg)
 
-A TypeScript library that manages the tool-use loop in LLM agents: runs independent calls in parallel, sequences dependent ones via a DAG, retries failures with backoff, caches results by content hash, and keeps tool errors from crashing the run. 322 tests. Three runtime dependencies.
+A TypeScript library that manages the tool-use loop in LLM agents: runs independent calls in parallel, sequences dependent ones via a DAG, retries failures with backoff, caches results by content hash, and keeps tool errors from crashing the run. 323 tests. Three runtime dependencies.
 
 ```
 Run run_4a9f2b1c8d3e  ·  2.01s  ·  3,204 tokens
@@ -303,7 +303,7 @@ Every significant event is written as newline-delimited JSON:
 
 ## Tests
 
-322 tests across 15 files.
+323 tests across 15 files.
 
 ```bash
 npm test               # unit + integration
