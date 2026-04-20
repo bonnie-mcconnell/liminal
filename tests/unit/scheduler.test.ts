@@ -84,7 +84,7 @@ describe("schedule", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Invariant tests — properties that must hold for any valid acyclic input
+// Invariant tests - properties that must hold for any valid acyclic input
 // ---------------------------------------------------------------------------
 
 /** Builds a deterministic acyclic graph via a simple LCG so tests are reproducible. */
@@ -97,7 +97,7 @@ function randomAcyclicCalls(count: number, seed: number): ScheduledCall[] {
   return Array.from({ length: count }, (_, i) => {
     const id = `c${String(i)}`;
     const toolName = `tool_${String(i)}`;
-    // Deps always point at earlier indices — guaranteed acyclic.
+    // Deps always point at earlier indices - guaranteed acyclic.
     const depCount = i === 0 ? 0 : Math.floor(rand() * Math.min(3, i));
     const depIds: string[] = [];
     for (let d = 0; d < depCount; d++) {

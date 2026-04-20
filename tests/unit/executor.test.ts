@@ -407,7 +407,7 @@ describe("ToolExecutor", () => {
   describe("never throws", () => {
     it("returns an error result when shouldRetry itself throws", async () => {
       // If a custom policy's shouldRetry function throws, that must not
-      // propagate out of execute() — it would break the never-throws contract.
+      // propagate out of execute() - it would break the never-throws contract.
       // The fix: wrap shouldRetry in try/catch and treat a crash as "don't retry".
       const registry = new ToolRegistry();
       registry.register({
@@ -434,7 +434,7 @@ describe("ToolExecutor", () => {
         },
       });
       const executor = new ToolExecutor(registry, new ResultCache(), createLogger("test"));
-      // Must not throw — must return a ToolResult with status: "error"
+      // Must not throw - must return a ToolResult with status: "error"
       const result = await executor.execute({
         id: "c1",
         toolName: "bad_policy",
@@ -886,7 +886,7 @@ describe("AbortSignal", () => {
     expect(failed?.attempts).toBe(0);
   });
 
-  it("aborts mid-execution via the signal race — tool completes but signal fires first", async () => {
+  it("aborts mid-execution via the signal race - tool completes but signal fires first", async () => {
     // Tool takes 100ms; signal fires at 20ms. The abort race should win.
     const tool = makeTool(
       "slow",
@@ -957,7 +957,7 @@ describe("AbortSignal", () => {
   });
 
   it("executes the sleep delay between retry attempts when baseDelayMs > 0", async () => {
-    // Use a 5ms delay — fast enough not to slow the suite, long enough for
+    // Use a 5ms delay - fast enough not to slow the suite, long enough for
     // Date.now() to measure reliably. This covers the sleep() code path.
     let calls = 0;
     const tool = makeTool(

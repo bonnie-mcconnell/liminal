@@ -192,9 +192,9 @@ describe("ToolRegistry", () => {
     });
   });
 
-  describe("policy merging — partial content-hash override", () => {
+  describe("policy merging - partial content-hash override", () => {
     it("merges individual cache fields against content-hash defaults when strategy is not overridden", () => {
-      // A tool that overrides only ttlMs without specifying strategy — should
+      // A tool that overrides only ttlMs without specifying strategy - should
       // inherit the default content-hash strategy and merge only ttlMs.
       const registry = new ToolRegistry();
       registry.register({

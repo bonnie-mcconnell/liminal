@@ -203,7 +203,7 @@ describe("Agent - integration", () => {
 
   describe("maxConcurrency", () => {
     it("limits simultaneous tool calls within a level", async () => {
-      // 4 independent tools, maxConcurrency: 2 — at most 2 should run at once.
+      // 4 independent tools, maxConcurrency: 2 - at most 2 should run at once.
       const activeCount: number[] = []; // snapshot of active calls at each start
       let running = 0;
 
@@ -815,7 +815,7 @@ describe("Agent - integration", () => {
       const registry = new ToolRegistry();
       const agent = new Agent(registry, { model: MODEL });
 
-      // Abort synchronously before awaiting run() — the loop checks the
+      // Abort synchronously before awaiting run() - the loop checks the
       // signal at the top of each iteration, so iteration 0 sees it aborted.
       agent.abort();
       const result = await agent.run("anything");
@@ -823,7 +823,7 @@ describe("Agent - integration", () => {
       expect(result.status).toBe("error");
       if (result.status !== "error") return;
       expect(result.error.code).toBe("PLANNER_ERROR");
-      // No API calls should have been made — the abort check fires first.
+      // No API calls should have been made - the abort check fires first.
       expect(callCount()).toBe(0);
     });
 
@@ -837,7 +837,7 @@ describe("Agent - integration", () => {
       const aborted = await agent.run("aborted task");
       expect(aborted.status).toBe("error");
 
-      // Second run should work normally — abort() on a new run is not
+      // Second run should work normally - abort() on a new run is not
       // inherited from the previous one.
       setResponses([textResponse("second answer")]);
       const good = await agent.run("normal task");

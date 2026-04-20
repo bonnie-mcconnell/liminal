@@ -24,7 +24,7 @@ module.exports = {
   overrides: [
     {
       // The demo script uses console.log intentionally - it is a CLI tool.
-      files: ["examples/**/*.ts"],
+      files: ["examples/**/*.ts", "benchmarks/**/*.ts"],
       rules: { "no-console": "off" },
     },
     {

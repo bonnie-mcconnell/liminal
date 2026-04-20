@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchTool } from "../../src/tools/fetch.js";
 
 // ---------------------------------------------------------------------------
-// Mock the global fetch using arrayBuffer() — matches the tool implementation
+// Mock the global fetch using arrayBuffer() - matches the tool implementation
 // ---------------------------------------------------------------------------
 
 function mockFetch(
@@ -217,7 +217,7 @@ describe("fetchTool", () => {
       vi.stubGlobal(
         "fetch",
         vi.fn().mockImplementation((_url: string, init: RequestInit) => {
-          // Simulate fetch honouring the signal — throws DOMException on abort
+          // Simulate fetch honouring the signal - throws DOMException on abort
           return new Promise((_resolve, reject) => {
             if (init.signal?.aborted === true) {
               reject(new DOMException("The operation was aborted.", "AbortError"));

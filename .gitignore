@@ -12,3 +12,5 @@ examples/context.md
 
 # Output directory from tsconfig.test.json (noEmit: true, but gitignore for safety)
 dist-test/
+
+docs/
