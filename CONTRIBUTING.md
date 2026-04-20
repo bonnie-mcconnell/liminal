@@ -1,7 +1,5 @@
 # Contributing
 
-## Setup
-
 ```bash
 git clone https://github.com/bonnie-mcconnell/liminal.git
 cd liminal
@@ -9,67 +7,34 @@ npm install
 npm test
 ```
 
-Node 20+ required. If a `package-lock.json` is present, use `npm ci` instead of `npm install` for a reproducible install.
+Node 20+ required.
 
-## Rules
+## Before you change anything
 
-**Write the test alongside the change.** Every module has a counterpart test file. Failure paths matter more than happy paths - the interesting behaviour is what happens when tools time out, inputs are invalid, retries are exhausted, or the dependency graph has a cycle.
+Run `npm run typecheck`. The tsconfig uses `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`, so code that passes default-strictness TypeScript sometimes fails here. That's intentional - the stricter flags have caught real bugs.
 
-**`npm run typecheck` before committing.** The tsconfig uses `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `noImplicitOverride`, so code that compiles at default strictness sometimes fails here. That is deliberate.
+## The one rule that matters most
 
-**No `any` without a comment.** If you need an escape hatch, add an inline note explaining what the type system cannot express and why the cast is safe.
+**`ToolExecutor.execute()` must never throw.** Every failure path returns a typed `ToolResult`. If you add a new execution path and it throws instead of returning an error result, the agent loop crashes and the model never gets a chance to recover. Check the executor tests - they cover every failure mode for a reason.
 
-**`ToolExecutor.execute` never throws.** It returns a `ToolResult` with `status: "error"` for every failure. A thrown error would bypass the structured error feedback that lets the model self-correct.
+## Other things that matter
 
-**Emit a `ToolEvent` for every lifecycle transition.** If you add a new execution path in `executor.ts`, it must emit the appropriate event. Pre-dispatch failures emit `failed` with `attempts: 0`. Post-dispatch failures emit `attempt_failed` then either `retrying` or `failed`. Success emits `succeeded`. Cache hits emit `cache_hit`. The complete contract is documented in `src/types/events.ts` and verified in `tests/unit/executor.test.ts` under "event emission".
+**Write tests for failure paths.** The interesting behaviour is what happens when tools time out, inputs are invalid, retries exhaust, or the dependency graph has a cycle. Happy-path tests are fine but they're not the ones that catch bugs.
 
-**Named errors, not `new Error("...")`.** Add a class to `src/errors/` for any new failure mode so callers can use `instanceof` checks.
+**Named errors, not `new Error("...")`**. Every failure mode has a class in `src/errors/` so callers can use `instanceof` without string-matching messages. Add a class for any new failure mode.
 
-**Provide `summarize` on new tools.** The `summarize` hook on `ToolDefinition` controls how the tool call appears in `renderTrace` output. It receives the validated input and should return the primary identifier as a string - the query, expression, path, city, or whatever field a human would use to describe the call. When `summarize` is absent, the renderer falls back to a priority-ordered heuristic (tries `query`, `expression`, `path`, `url`, `id`, `name` before falling back to the first string field). Provide `summarize` explicitly whenever the primary field doesn't match that list or when the label should combine multiple fields.
+**Emit a `ToolEvent` for every new lifecycle transition.** If you add a path in `executor.ts`, it needs an event. The contract is in `src/types/events.ts`.
 
-## Code style
-
-Formatter: Prettier (`.prettierrc`). Linter: ESLint (`strict-type-checked`). Comments explain *why*, not *what* - if a comment restates what the code does, delete it.
+**No `any` without a comment** explaining why the type system can't express what you need.
 
 ## Adding a tool
 
-```typescript
-import { z } from "zod";
-import { DEFAULT_SHOULD_RETRY } from "../core/defaults.js";
-import type { ToolDefinition } from "../types/index.js";
+Implement `ToolDefinition`, register with `ToolRegistry`, export from `src/tools/index.ts` and `src/index.ts`. See `src/tools/calculator.ts` for a complete example.
 
-export const myTool: ToolDefinition = {
-  name: "my_tool",
-  description: "What it does. When to use it. When NOT to use it.",
-  inputSchema: z.object({ /* ... */ }),
-  outputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* ... */ },
-  summarize: ({ query }) => query, // replace 'query' with your tool's primary identifier field
-  policy: {
-    timeoutMs: 10_000,
-    retry: {
-      maxAttempts: 3,
-      backoff: "exponential",
-      baseDelayMs: 500,
-      maxDelayMs: 10_000,
-      jitterMs: 200,
-      // Use DEFAULT_SHOULD_RETRY or extend it:
-      // shouldRetry: (err, attempt) => myCheck(err) || DEFAULT_SHOULD_RETRY(err, attempt)
-      shouldRetry: DEFAULT_SHOULD_RETRY,
-    },
-    cache: { strategy: "content-hash", ttlMs: 5 * 60_000, vary: [], maxEntries: 256 },
-  },
-};
-```
+Provide `summarize` - it controls how the tool call appears in `renderTrace` output. Without it the renderer falls back to a heuristic that checks `query`, `expression`, `path`, `url`, `id`, `name` in order.
 
-Never use `eval()` or `new Function()`. Validate filesystem paths (see `file-reader.ts`). Export from `src/tools/index.ts` and `src/index.ts`.
+Implement cooperative cancellation if your tool does I/O. The `execute` function optionally accepts a second `signal?: AbortSignal` argument. Forward it to `fetch()`, pass it to fs operations, or check `signal.throwIfAborted()` at natural boundaries. Tools that ignore the signal still work correctly via the executor's external `Promise.race` - they just continue running in the background after a timeout fires.
 
-## Demo
+## Code style
 
-```bash
-export ANTHROPIC_API_KEY=your_key
-npm run demo
-npm run demo:dry
-```
-
-Set `BRAVE_SEARCH_API_KEY` for real web results. Set `LOG_LEVEL=debug` to see every dispatch and cache check.
+Prettier for formatting, ESLint `strict-type-checked` for linting. Comments explain *why*, not *what*.

@@ -1,63 +1,59 @@
 # Changelog
 
-All notable changes to this project are documented here.
+## [0.4.2] - 2026-04-20
 
-## [0.3.0] - 2026-04-13
+**Bug fix: incorrect collision probability in `generateRunId` JSDoc.** The comment claimed `< 10⁻¹⁸` for 10⁶ runs; the correct birthday bound for N=10⁶ in a 2⁶⁴ space is ~2.7×10⁻⁸. Updated with the correct value and the calculation behind it. (The `cacheKey` JSDoc was already correct - only the run ID comment was wrong.)
 
-### Added
-- **`fetchTool`** - built-in HTTP tool (GET/POST/PUT/PATCH/DELETE/HEAD) with body
-  truncation, charset detection, and retry on transient network errors. Responses are
-  not cached: HTTP-level caching (ETags, Cache-Control) is the correct layer, not
-  input-hash caching that would silently swallow POST side effects.
-- **`maxConcurrency`** on `AgentConfig` - caps simultaneous tool calls within a
-  scheduler level. Uses a bounded worker pool so calls drain in dispatch order.
-  Defaults to unlimited (existing behaviour unchanged).
-- **`renderTrace`** highlighted in Quick Start - the execution tree output is now
-  shown in the first code example a reader sees.
+**Bug fix: `maxConcurrency: 0` silently hung.** Passing `maxConcurrency: 0` created zero workers, ran no tasks, and returned an array of sentinel rejections - a silent hang with no error. The `Agent` constructor now throws a `RangeError` with a clear message. `allSettledConcurrent` also adds a `limit < 1` defence-in-depth guard.
 
-### Fixed
-- `shouldRetry` throwing inside the retry loop no longer breaks the `ToolExecutor`
-  never-throws contract. A crashing policy function is now treated as "don't retry".
-- Windows UNC paths (`\\server\share\file`) bypassed the `file_reader` sandbox.
-  Replaced the drive-letter regex with `path.isAbsolute()` which catches all three
-  absolute-path forms (Unix, Windows drive, UNC).
-- Appending the truncation marker to a base64-encoded body corrupted the payload.
-  The marker is now only appended for `utf-8` responses.
-- Trace parallel annotation incorrectly marked sequential calls `[parallel]` when
-  the same tool name appeared in both a sequential and a parallel level. Fixed by
-  consuming calls level-by-level rather than scanning by name globally.
-- Unknown `LOG_LEVEL` values (e.g. `verbose`) previously produced `undefined` in
-  the numeric level lookup, making the comparison always false and logging
-  everything. Unknown values now fall back to `info`.
+**Improvement: duplicate call ID error now names the offending ID.** Previously: `"Duplicate call IDs in the same scheduling batch"`. Now: `"Duplicate call IDs in the same scheduling batch: dup_id"`. Smaller fix, much faster to debug.
 
-## [0.2.0] - 2026-04-11
+**Improvement: `LruCache.clear()` no longer resets counters.** Resetting stats on every `clear()` call meant `ResultCache.stats()` would undercount if the cache was flushed between runs. `clear()` now only evicts entries. A new `resetStats()` method zeroes counters explicitly when that's what you want.
 
-### Added
-- **Tool dependency scheduling** - declare `toolDependencies` on `AgentConfig` to impose execution order within a turn. Independent calls still run concurrently; declared dependencies are resolved per-turn by Kahn's algorithm and recorded as `parallelLevels` on `AgentStep`.
-- **Typed event stream** - `AgentOptions.onEvent` delivers a `ToolEvent` at every lifecycle transition (cache hit, dispatched, attempt failed, retrying, succeeded, failed). Zero overhead when no listener is registered.
-- **`EventEmitter<T>`** - exported for wiring multiple listeners without coupling to the agent loop.
-- **`ToolDefinition.summarize`** - per-tool hook controlling how the call appears in `renderTrace` output. Falls back to a priority-ordered heuristic when absent.
-- **`Cache` interface** - `ToolExecutor` and `Agent` now depend on the interface, not the concrete `ResultCache` class. Swap in any backend (Redis, test double) without touching orchestration code.
+**Docs: documented the cache key truncation tradeoff.** The `cacheKey` function truncates the SHA-256 digest to 16 hex chars (64 bits). The JSDoc now explains when the full 256-bit digest would be the right choice and how to get there. Added the same tradeoff to "What I'd do differently" in the README.
 
-### Changed
-- Cache key derivation switched from djb2 to SHA-256 (64-bit prefix). SHA-256's avalanche property prevents clustering on structured JSON inputs; collision probability ≈ 2.7×10⁻⁸ for 10⁶ distinct inputs.
-- `CachePolicy` is now a discriminated union. Accessing `ttlMs` on a `"no-cache"` policy is a compile error, not a runtime surprise.
-- Run IDs now use `crypto.randomUUID()` (122-bit CSPRNG) instead of `Math.random()`.
+6 new tests (316 → 322): `maxConcurrency: 0` guard, duplicate ID naming, `clear()` preserves counters, `resetStats()`, cacheKey nested-object invariants, scheduler ordering invariants over 20 random acyclic graphs.
 
-### Fixed
-- `CyclicDependencyError` thrown by the scheduler is now caught and returned as a structured `AgentResult` rather than rejecting the `run()` promise.
+## [0.4.1] - 2026-04-19
 
-## [0.1.0] - 2026-03-10
+Cooperative cancellation is now implemented in all three network-capable built-in tools.
 
-Initial release.
+`fetchTool` and `webSearchTool` forward the `AbortSignal` directly to the underlying `fetch()` call, so an in-flight HTTP request actually stops when the signal fires - the OS connection is torn down, not just abandoned. `fileReaderTool` checks the signal at each I/O boundary (`stat` then `readFile`) via `throwIfAborted()`, which is correct for operations that don't natively accept a signal.
 
-- Agent loop with budget enforcement (token and step limits)
-- `ToolExecutor`: cache → input validation → timeout → retry → output validation → cache write. Never throws.
-- `ResultCache`: djb2 content-addressable, per-tool LRU, TTL expiry
-- `LruCache`: O(1) get/set via doubly-linked list + Map
-- DAG scheduler (Kahn's algorithm) for parallel tool execution
-- `ToolRegistry` with policy merging and JSON Schema conversion
-- Built-in tools: `calculator` (recursive-descent parser, no eval), `web_search` (Brave API + mock), `file_reader` (path sandboxing)
-- Structured NDJSON logger with runtime `LOG_LEVEL` switching
-- `renderTrace` execution tree renderer
-- 161 unit tests across 13 modules + integration tests with deterministic mock SDK
+To support this, `ToolDefinition.execute` now optionally accepts a second `signal?: AbortSignal` argument. The executor passes the run's signal through on every dispatch. Tools that don't declare the parameter continue to work unchanged - the executor still races the signal externally via `Promise.race`. The cooperative path is additive: declaring the parameter means the tool stops doing work on abort, rather than running to completion in the background.
+
+5 new tests (311 → 316): signal forwarded to `fetch()`, no signal property when not provided, abort before fetch resolves, file-reader aborts before I/O, file-reader succeeds with live signal.
+
+## [0.4.0] - 2026-04-17
+
+The main thing in this release is cancellation. `agent.abort()` stops a run after the current model call or tool turn completes - the `run()` promise always resolves to a structured result, never rejects. The `AbortSignal` threads through to every `ToolExecutor.execute()` call so the executor can bail out before the next attempt rather than spinning until timeout.
+
+Pre-run abort works: calling `abort()` before `run()` makes the next run return immediately without making any API calls. Post-run `abort()` is a no-op. I wanted both edge cases to be safe to call without checking state first.
+
+Also fixed the `allSettledConcurrent` worker pool to not create more workers than there are tasks - when `maxConcurrency` was larger than the task count, the excess workers would spin-exit immediately. Harmless but wasteful.
+
+Added `ToolRegistry.size` and `[Symbol.iterator]` - I kept reaching for these when writing tests and hitting undefined.
+
+`toolDependencies` is now validated at construction time. Previously, a misspelled tool name in the dependency graph was silently dropped - no error, no sequencing. The failure showed up as a mysterious ordering bug at runtime that was annoying to track down.
+
+The benchmark script (`npm run bench`) measures parallel vs sequential with controlled artificial delays. On 3 independent 200ms calls: sequential ~602ms, parallel ~201ms, 2.99× speedup at 99.8% of theoretical maximum. Scheduling overhead is under 1ms.
+
+25 new tests (276 → 301), covering: abort pre-run and mid-run, AbortSignal threading, ToolRegistry iteration, construction-time validation, and a handful of edge cases I found while writing the cancellation code.
+
+## [0.3.0] - 2026-04-15
+
+Added `fetchTool` - HTTP GET/POST/PUT/PATCH/DELETE/HEAD with body truncation and retry on transient network errors. Not cached by default; HTTP-level caching (ETags, Cache-Control) is the right layer for that.
+
+Added `maxConcurrency` to `AgentConfig`. Caps simultaneous tool calls within a scheduler level using a bounded worker pool. Defaults to unlimited so existing code is unaffected.
+
+Fixed a path sandboxing bug in `fileReaderTool` where Windows UNC paths bypassed the absolute-path check. Replaced the drive-letter regex with `path.isAbsolute()`, which handles Unix, Windows drive-letter, and UNC paths correctly.
+
+Fixed the trace renderer incorrectly marking calls `[parallel]` when the same tool name appeared in both a sequential and a parallel level in the same step.
+
+## [0.2.0] - 2025-02-15
+
+First public release with the core agent loop, scheduler, executor, and result cache.
+
+Built-in tools: `calculatorTool` (recursive-descent parser, no `eval()`), `webSearchTool` (Brave API with mock fallback), `fileReaderTool` (path-sandboxed).
+
+Structured NDJSON logging, `renderTrace` tree renderer, typed `ToolEvent` stream.
