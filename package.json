@@ -20,7 +20,7 @@
   "author": "Bonnie McConnell",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bonnie-mcconnell/liminal"
+    "url": "git+https://github.com/bonnie-mcconnell/liminal.git"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -51,7 +51,7 @@
     "bench:custom": "tsx benchmarks/parallel-vs-sequential.ts --calls 4 --delay 300"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.88.0",
+    "@anthropic-ai/sdk": "^0.90.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.23.0"
   },
