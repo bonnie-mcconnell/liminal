@@ -2,124 +2,136 @@
 
 ![CI](https://github.com/bonnie-mcconnell/liminal/actions/workflows/ci.yml/badge.svg)
 
-Tool-use orchestration for the Anthropic API. 276 tests. Three runtime dependencies: the Anthropic SDK, Zod, and zod-to-json-schema.
+A TypeScript library that manages the tool-use loop in LLM agents: runs independent calls in parallel, sequences dependent ones via a DAG, retries failures with backoff, caches results by content hash, and keeps tool errors from crashing the run. 322 tests. Three runtime dependencies.
 
 ```
-Run run_4a9f2b1c8d3e  ·  4.18s  ·  3,204 tokens
-├─ Step 1  381ms  ·  280 tokens  ·  3 calls (2 levels)
-│  ├─ web_search("typescript strict mode benefits")  →  success  312ms  [parallel]
-│  ├─ web_search("typescript adoption statistics")  →  success  298ms  [parallel]
-│  └─ calculator("500 * 0.62 * 0.40")  →  cache hit  0ms
-├─ Step 2  1,203ms  ·  180 tokens  ·  2 calls (2 levels)
-│  ├─ file_reader("examples/context.md")  →  success  4ms  [parallel]
-│  └─ fetch("GET https://api.github.com/repos/microsoft/TypeScript")  →  success  891ms  [parallel]
+Run run_4a9f2b1c8d3e  ·  2.01s  ·  3,204 tokens
+├─ Step 1  201ms  ·  280 tokens  ·  3 calls (1 level)
+│  ├─ web_search("typescript strict mode benefits")  →  success  198ms  [parallel]
+│  ├─ web_search("typescript adoption statistics")   →  success  201ms  [parallel]
+│  └─ calculator("500 * 0.62 * 0.40")               →  cache hit  0ms   [parallel]
+├─ Step 2  1,203ms  ·  180 tokens  ·  2 calls (1 level)
+│  ├─ file_reader("examples/context.md")             →  success  4ms    [parallel]
+│  └─ fetch("GET https://api.github.com/...\")        →  success  891ms  [parallel]
 └─ Final answer  (487 tokens out)
 ```
 
-The two web searches ran in parallel. The calculator hit the cache from an earlier call. Step 2 ran the file read and HTTP fetch concurrently. None of this required configuration - it falls out of the scheduler and executor design.
+Both web searches and the calculator ran simultaneously in step 1. The file read and HTTP fetch ran simultaneously in step 2. None of this required extra configuration - it falls out of the scheduler and executor design.
 
 ## Why I built this
 
-I was building an agent that made two web searches per turn - independent queries, no reason one had to wait for the other. But every implementation I looked at ran them sequentially, because the model issues tool calls in a list and the obvious thing to do is execute them one by one. On a task with three or four tool calls that were all independent, I was leaving two or three seconds of parallelism on the floor every single turn.
+I was building an agent that made two web searches per turn - independent queries, no reason one had to wait for the other. Every implementation I found ran them sequentially, because the model issues tool calls as a list and the obvious thing is to execute them one by one. On a turn with three independent 200ms calls, that's 600ms. The three calls should take 200ms.
 
-Fixing it properly meant the agent loop needed to know which calls were independent and which had data dependencies. Once I started thinking about that, I realised the loop was doing too many things: calling the model, managing execution order, handling retries, writing to cache. Those are separate problems and they don't belong tangled together.
+Fixing it properly meant the agent loop needed to know which calls were independent and which had real data dependencies. Once I started thinking about that, the loop was also obviously doing too many other things: calling the model, managing execution order, handling retries, writing to cache. Those are separate problems and they don't belong tangled together.
 
-So I separated them. The loop is now thin: call the model, hand tool calls to the scheduler, execute each level in parallel, feed results back. The scheduler (Kahn's algorithm), executor (timeout/retry/cache), and cache (SHA-256 content-addressed LRU) are separate components with their own interfaces and test suites.
+So I pulled them apart. The scheduler (Kahn's algorithm) groups calls into execution levels. The executor handles timeout, retry, and cache per-call. The loop just calls the model, hands tool calls to the scheduler, runs each level via `Promise.allSettled`, and feeds results back.
 
-The other thing that bothered me: most agent implementations let tool errors throw. One failed tool call crashes the whole run. The right behaviour is to return a typed error result to the model and let it decide what to do - try different parameters, use a different tool, or answer from what it already has. That's what `ToolExecutor` does. It never throws.
+The other thing that bothered me: most agent implementations let tool errors throw. One failed tool call crashes the entire run. The right behaviour is to return a typed error result to the model and let it decide - try different parameters, use a different tool, or answer from what it already has. The executor never throws.
+
+## Measured performance
+
+```
+$ npm run bench
+
+────────────────────────────────────────────────────────────
+  liminal - parallel vs sequential benchmark
+────────────────────────────────────────────────────────────
+  3 tool calls × 200ms delay each
+  5 runs per configuration
+
+  Strategy      Mean        Stddev      Samples
+  ────────────────────────────────────────────────────────
+  Sequential    602ms       1ms         602ms  604ms  603ms  601ms  602ms
+  Parallel      201ms       0ms         201ms  201ms  201ms  202ms  201ms
+
+  Speedup:              2.99×
+  Theoretical maximum:  3.00×
+  Efficiency:           99.8% of theoretical
+```
+
+Scheduling overhead is sub-millisecond.
 
 ## How it works
 
 ```
 Agent
   └─ for each iteration:
-       ├─ check budget
+       ├─ check abort signal
+       ├─ check budget (tokens, steps)
        ├─ call Anthropic API
        ├─ if no tool calls → done
        ├─ resolveScheduledCalls: apply toolDependencies graph → ScheduledCall[]
        ├─ Scheduler (Kahn's): topological sort → execution levels
-       ├─ for each level: Promise.allSettled(executor.execute(...))
+       ├─ for each level: Promise.allSettled(executor.execute(call, signal))
        └─ feed results back to model
 
 ToolExecutor (per call)
+  ├─ check AbortSignal
   ├─ check ResultCache (SHA-256 content-addressable key)
   ├─ validate input (Zod)
-  ├─ Promise.race(execute(), timeout)
-  ├─ retry with exponential backoff + jitter if shouldRetry(err)
+  ├─ Promise.race(execute(), timeout, abortSignal)
+  ├─ retry with exponential backoff + jitter
   ├─ validate output (Zod)
   └─ write to ResultCache
 ```
 
-**Scheduler** - Kahn's algorithm groups tool calls into execution levels. Everything in a level is independent and runs concurrently via `Promise.allSettled`. A failure in one call does not cancel the others. Cycles throw `CyclicDependencyError` immediately.
+**Scheduler** - Kahn's algorithm groups calls into levels. Everything in a level runs via `Promise.allSettled` - not `Promise.all`, because a failure in one call shouldn't cancel its siblings. Cycles in the dependency graph throw `CyclicDependencyError` at scheduling time rather than producing mysterious ordering at runtime.
 
-**ResultCache** - SHA-256 content-addressable: the cache key is a 64-bit digest of the canonicalised input, so `{a:1,b:2}` and `{b:2,a:1}` hit the same entry. Each tool gets its own LRU store so a busy tool can't evict another's results. The `Cache` interface lets you substitute a Redis backend for cross-process sharing.
+**ResultCache** - SHA-256 content-addressable: `{a:1,b:2}` and `{b:2,a:1}` hit the same entry because object keys are canonicalised (sorted recursively) before hashing. Each tool gets its own LRU store so a high-traffic tool can't evict results belonging to others. Inject a shared instance across agents to deduplicate calls across runs.
 
-**ToolExecutor** - the only place where timeouts, retries, and cache writes happen. Never throws. Every failure path returns a typed `ToolResult` with an error code the model can reason about.
+**ToolExecutor** - never throws. Every failure path - not found, bad input, timeout, execution error, retry exhaustion - returns a typed `ToolResult` with a machine-readable error code. The model sees the error and can reason about it: retry with different parameters, fall back to a different tool, or answer from what it already has.
 
-## Design decisions worth explaining
+## Design decisions
 
-**Why Kahn's over DFS topological sort?** Both work. I chose Kahn's because cycle detection falls out of it for free - any node with nonzero in-degree after the sweep is part of a cycle, so you don't need a separate visited-set check. With DFS you have to track that separately. For a tool with LLM-scale dependency graphs (realistically 2-10 nodes per turn) the difference doesn't matter for performance, but the cycle detection being implicit rather than bolted on felt cleaner.
+**Kahn's over DFS for topological sort.** Both give a valid ordering. Kahn's cycle detection is implicit - any node with nonzero in-degree after the sweep is in a cycle. With DFS you add a separate visited-set check. The cycle detection falling out of the algorithm for free felt cleaner than bolting it on.
 
-**Why `Promise.allSettled` over `Promise.all`?** `Promise.all` short-circuits on the first rejection. A failure in one parallel tool call should not cancel the others - the model receives all results, including errors, and decides what to do next.
+**SHA-256 over a faster hash.** Non-cryptographic hashes (djb2, FNV) cluster on structured data like JSON - a one-character difference in a key might produce a very similar digest. SHA-256's avalanche property guarantees a one-bit input difference produces an unrecognisable digest. The 64-bit prefix gives a collision probability of ~2.7×10⁻⁸ for 10⁶ distinct inputs, which is fine for tool-call caching.
 
-**Why SHA-256 over a faster hash?** Non-cryptographic hashes (djb2, FNV) can cluster on structured data like JSON. SHA-256's avalanche property guarantees a one-bit input difference produces an unrecognisably different digest. The 64-bit prefix gives a collision probability of ~2.7×10⁻⁸ for 10⁶ distinct inputs.
+**Canonical input serialisation.** `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings. The same logical input would miss the cache. Sorting object keys recursively before hashing fixes this without changing the data.
 
-**Why canonical hashing?** `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings. The same logical input would miss the cache. Sorting object keys recursively before hashing fixes this.
+**Static `toolDependencies` graph.** The Anthropic API has no structured field for the model to express inter-tool dependencies. Parsing them from free text is fragile and I didn't want to commit to a prompt format. Static declaration at the agent level is explicit and testable.
 
-**Why a static `toolDependencies` graph rather than model-annotated dependencies?** The Anthropic API has no structured field for the model to express inter-tool dependencies. Parsing them from free text is fragile. Static declaration at the agent level is explicit, testable, and requires no prompt engineering.
+**`CachePolicy` as a discriminated union.** A `"no-cache"` policy has no `ttlMs` to configure. If `CachePolicy` were a flat object with an optional strategy field, accessing `ttlMs` on a no-cache policy would be a silent runtime bug. As a discriminated union, it's a compile error.
 
-**Why jitter on retries?** Without it, clients that all fail at the same moment retry at the same moment, hitting the recovering service with the same burst that caused the failure. Adding a random value in `[0, jitterMs]` breaks the synchrony.
+**Cache capacity configured at construction, not per write.** Early versions of the cache took `maxEntries` on every `set()` call. That's a leaky interface - any Redis backend would have to accept a parameter it can't use. Moved to `configure()` called once per tool at agent construction, so writes are just writes.
 
-**Why the `CachePolicy` discriminated union?** A `"no-cache"` policy has no `ttlMs` to configure. If `CachePolicy` were a flat object with an optional `strategy` field, accessing `ttlMs` on a no-cache policy would be a silent runtime surprise. As a discriminated union, it's a compile error. I reached for this specifically because I'd hit the flat-object version of this bug in an earlier project.
+**Jitter on retries.** Without it, clients that all fail at t=0 retry at t+delay, hitting the recovering service with the same burst. Adding `[0, jitterMs]` of randomness breaks the synchrony.
 
-**Why TypeScript?** The Anthropic SDK types are generated from the API schema. When the schema changes, the compiler tells you exactly which call sites break before any code runs. The strict config - specifically `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` - also catches a class of indexing and optional-field bugs that default-strictness TypeScript quietly allows. The `CachePolicy` discriminated union is the clearest example of where that strictness paid off directly.
+**`toolDependencies` validated at construction time.** A misspelled tool name (`"summerise"` vs `"summarise"`) was previously silently dropped - no error, no sequencing, mysterious ordering at runtime. Validating against the registry at construction time names the offending tool immediately.
 
 ## What I'd do differently
 
-The `toolDependencies` graph is declared statically on the agent, not per-call. That means if you want `summarise_results` to depend on `web_search`, you declare it globally and it applies every turn - even turns where `web_search` isn't called (which the resolver handles by ignoring absent dependencies). It works, but the right interface is probably per-invocation dependency hints from the model, which the Anthropic API doesn't yet expose in a structured way.
+The `toolDependencies` graph is declared statically on the agent, not per-call. If you want `summarise_results` to depend on `web_search`, you declare it globally - it applies every turn, even turns where `web_search` isn't called (which the resolver handles by ignoring absent dependencies). The right interface is probably per-invocation dependency hints from the model, but the Anthropic API doesn't expose that in a structured way yet. This isn't just a waiting-for-the-API situation - it reflects a real design constraint: static declaration is explicit and testable, but it prevents context-dependent sequencing that a smarter graph would support.
 
-The `Cache` interface's `set()` takes `maxEntries` on every write, but the capacity is only applied on the first write per tool - subsequent writes with different values are silently ignored. This is documented in the interface but it's a footgun. A cleaner design would lock capacity at tool registration time through the registry.
+The cache key uses the first 16 hex chars (64 bits) of the SHA-256 digest. 64 bits gives P(collision) ≈ 2.7×10⁻⁸ at 10⁶ distinct inputs - fine for tool-call caching where a false positive serves stale data rather than causing corruption. But the truncation is a choice with a real tradeoff: the full 64-char digest would eliminate collision risk entirely at the cost of a larger key footprint per entry. For a distributed Redis cache processing millions of calls per day, the full digest is the right call. I'd make this configurable at `ResultCache` construction time.
 
-Timeouts use `Promise.race` rather than cooperative cancellation. The timed-out tool continues running in the background until it settles - for read-only tools this is wasteful; for mutating tools it can cause duplicate side effects on retry. True cancellation would require `execute` to accept an `AbortSignal`, which would be an API-breaking change.
-
-I also didn't implement streaming. `ToolExecutor.execute` awaits the complete result before returning. The `ToolEvent` stream already delivers per-attempt progress; true streaming would require `execute` to return an `AsyncIterable<ToolEvent>` where `succeeded` is the terminal event.
+For tools that implement cooperative cancellation (accepting `signal?: AbortSignal` in their `execute` function), in-flight work stops immediately when a timeout or abort fires - no background resource consumption, no duplicate side effects on retry. The built-in tools all do this: `fetchTool` and `webSearchTool` forward the signal to `fetch()`, and `fileReaderTool` checks it at each I/O boundary. Custom tools that ignore the signal still work correctly via the external `Promise.race`, but their timed-out execution continues in the background until it settles.
 
 ## Installation
 
 ```bash
-git clone https://github.com/bonnie-mcconnell/liminal.git
-cd liminal
-npm install
+npm install @bonnie-mcconnell/liminal
 ```
 
 Node 20+ required.
 
-**To run the demo** - no build step needed, `tsx` compiles on the fly:
+**To run the demo:**
 
 ```bash
-npm run demo:dry    # inspect the task and tools - no API key required
+npm run demo:dry    # inspect the task and tools without an API key
 npm run demo        # live run - requires ANTHROPIC_API_KEY
-```
-
-**To build the distributable:**
-
-```bash
-npm run build
+npm run bench       # measure parallel vs sequential performance
 ```
 
 ## Quick start
 
 ```typescript
-// Clone and run from this repo - no build step needed:
-// git clone https://github.com/bonnie-mcconnell/liminal.git && cd liminal && npm install
-import { Agent, ToolRegistry, calculatorTool, webSearchTool, renderTrace } from "../src/index.js";
-
-// If published to npm: import { ... } from "liminal";
+import { Agent, ToolRegistry, calculatorTool, webSearchTool, renderTrace } from "@bonnie-mcconnell/liminal";
 
 const registry = new ToolRegistry().register(calculatorTool).register(webSearchTool);
 
 const agent = new Agent(registry, {
-  model: "claude-opus-4-6", // or "claude-sonnet-4-6" for lower cost
+  model: "claude-haiku-4-5-20251001", // use opus-4-6 for harder tasks
   budget: { maxTotalTokens: 10_000 },
 });
 
@@ -130,13 +142,11 @@ const result = await agent.run(
 
 if (result.status === "success") {
   console.log(result.output);
-  console.log(renderTrace(result.trace)); // prints the execution tree
+  console.log(renderTrace(result.trace));
 }
 ```
 
 ## Built-in tools
-
-Four tools ship with the library. Register whichever ones your agent needs:
 
 | Tool | What it does | Caching |
 |---|---|---|
@@ -145,15 +155,13 @@ Four tools ship with the library. Register whichever ones your agent needs:
 | `fileReaderTool` | Reads files relative to cwd - rejects absolute paths and directory traversal | Content-hash, 30s TTL |
 | `fetchTool` | HTTP requests (GET/POST/PUT/PATCH/DELETE/HEAD) with body truncation | No-cache (side effects) |
 
-All four are exported from `"liminal"` and follow the same `ToolDefinition` interface, so you can use them as-is or as reference implementations for your own tools.
-
 ## Tool dependencies
 
-By default, all tool calls in a single model turn run concurrently. When one tool genuinely needs the output of another, declare it in `toolDependencies`:
+By default, all tool calls in a single model turn run concurrently. When one tool genuinely needs the output of another, declare it in `toolDependencies`. All names must be registered in the registry - the constructor throws immediately if any are unknown.
 
 ```typescript
 const agent = new Agent(registry, {
-  model: "claude-opus-4-6",
+  model: "claude-haiku-4-5-20251001",
   toolDependencies: {
     // summarise_results always runs after web_search completes
     summarise_results: ["web_search"],
@@ -163,51 +171,25 @@ const agent = new Agent(registry, {
 });
 ```
 
-Dependencies on tools not called in a given turn are silently ignored - declare the full graph once and let it apply selectively. Cycles throw `CyclicDependencyError` immediately.
+Dependencies on tools not called in a given turn are silently ignored. Cycles throw `CyclicDependencyError` immediately.
 
-The execution plan is recorded on every `AgentStep` as `parallelLevels`:
-
-```typescript
-// result.trace.steps[0].parallelLevels
-// → [["web_search"], ["summarise_results"], ["analyse_data"]]
-```
-
-## Concurrency control
-
-By default, all independent tool calls in a level run simultaneously. Use `maxConcurrency` to cap parallel execution - useful when your tools hit rate-limited APIs or you need to control resource usage:
+## Cancellation
 
 ```typescript
-const agent = new Agent(registry, {
-  model: "claude-opus-4-6",
-  maxConcurrency: 2, // at most 2 tool calls running at once
-});
+const runPromise = agent.run(longTask);
+
+setTimeout(() => agent.abort(), 10_000);
+
+const result = await runPromise;
+if (result.status === "error") {
+  console.log(result.error.code);   // "PLANNER_ERROR"
+  console.log(result.trace.steps.length); // steps completed before cancel
+}
 ```
 
-With `maxConcurrency: 2` and 4 independent calls, the first two start immediately and the next two start as slots open. The scheduler still groups calls into dependency levels - `maxConcurrency` limits throughput within each level, not across levels.
-
-## HTTP fetch tool
-
-The built-in `fetchTool` makes HTTP requests and returns the response status, headers, and body:
-
-```typescript
-import { Agent, ToolRegistry, fetchTool } from "liminal";
-
-const agent = new Agent(
-  new ToolRegistry().register(fetchTool),
-  { model: "claude-opus-4-6" },
-);
-
-const result = await agent.run(
-  "Fetch https://api.github.com/repos/anthropics/anthropic-sdk-typescript " +
-  "and tell me the open issue count and star count."
-);
-```
-
-The tool handles response body truncation, charset detection from `Content-Type`, and retries on transient network errors (`TypeError`, `ECONNRESET`). POST/PUT/PATCH bodies are passed as strings - JSON.stringify before passing. Responses are not cached because HTTP side effects must always fire.
+`run()` always resolves - it never rejects. Calling `abort()` before `run()` is valid; calling it when no run is active is a no-op.
 
 ## Live event stream
-
-Every lifecycle transition emits a typed `ToolEvent`. Subscribe via `AgentOptions.onEvent`:
 
 ```typescript
 const agent = new Agent(registry, config, {
@@ -230,22 +212,22 @@ const agent = new Agent(registry, config, {
 });
 ```
 
-The complete lifecycle per call:
+Complete lifecycle per call:
 
 ```
-dispatched → succeeded                                           # first attempt success
-cache_hit                                                        # no dispatch
-dispatched → attempt_failed → retrying → dispatched → succeeded # retry success
-dispatched → attempt_failed → retrying → dispatched → attempt_failed → failed  # exhausted
-failed                                                           # pre-dispatch (not found, invalid input)
+dispatched → succeeded                                            # first attempt success
+cache_hit                                                         # no dispatch
+dispatched → attempt_failed → retrying → dispatched → succeeded  # retry success
+dispatched → attempt_failed → ... → failed                       # exhausted
+failed                                                            # pre-dispatch (not found, invalid input)
 ```
 
 ## Custom tools
 
 ```typescript
 import { z } from "zod";
-import { ToolTimeoutError } from "liminal";
-import type { ToolDefinition } from "liminal";
+import { ToolTimeoutError } from "@bonnie-mcconnell/liminal";
+import type { ToolDefinition } from "@bonnie-mcconnell/liminal";
 
 const weatherTool: ToolDefinition = {
   name: "get_weather",
@@ -260,7 +242,7 @@ const weatherTool: ToolDefinition = {
     temperature: z.number(),
     conditions: z.string(),
   }),
-  execute: async ({ city, units }) => fetchWeather(city, units),
+  execute: async ({ city, units }, signal) => fetchWeather(city, units, signal),
   summarize: ({ city, units }) => `${city} (${units})`,
   policy: {
     timeoutMs: 10_000,
@@ -277,19 +259,16 @@ const weatherTool: ToolDefinition = {
 };
 ```
 
-The `description` field is the model's only documentation for your tool. Be specific about what it does and when _not_ to use it.
-
 ## Sharing a cache across runs
 
 ```typescript
-import { Agent, ToolRegistry, ResultCache, type Cache, calculatorTool } from "liminal";
+import { Agent, ToolRegistry, ResultCache, type Cache, calculatorTool } from "@bonnie-mcconnell/liminal";
 
 const cache: Cache = new ResultCache();
 const registry = new ToolRegistry().register(calculatorTool);
 
-// Both agents deduplicate identical tool calls.
-const agent1 = new Agent(registry, { model: "claude-opus-4-6" }, { cache });
-const agent2 = new Agent(registry, { model: "claude-opus-4-6" }, { cache });
+const agent1 = new Agent(registry, { model: "claude-haiku-4-5-20251001" }, { cache });
+const agent2 = new Agent(registry, { model: "claude-haiku-4-5-20251001" }, { cache });
 
 const stats = cache.stats("calculator");
 console.log(`Hit rate: ${((stats?.hitRate ?? 0) * 100).toFixed(1)}%`);
@@ -298,7 +277,7 @@ console.log(`Hit rate: ${((stats?.hitRate ?? 0) * 100).toFixed(1)}%`);
 ## Error handling
 
 ```typescript
-import { BudgetExceededError, MaxIterationsError } from "liminal";
+import { BudgetExceededError, MaxIterationsError } from "@bonnie-mcconnell/liminal";
 
 const result = await agent.run(task);
 
@@ -308,7 +287,6 @@ if (result.status === "error") {
     // result.error.limit, result.error.used
   } else if (result.error instanceof MaxIterationsError) {
     // Model is looping - check tool descriptions and prompt design
-    // before raising the limit.
   }
   // result.trace is always present, even on failure.
   console.log(`${result.trace.steps.length} steps completed`);
@@ -320,34 +298,37 @@ if (result.status === "error") {
 Every significant event is written as newline-delimited JSON:
 
 ```
-{"ts":"...","level":"info","runId":"run_4a9f2b","event":"agent.started","data":{"model":"claude-opus-4-6"}}
+{"ts":"...","level":"info","runId":"run_4a9f2b","event":"agent.started","data":{"model":"claude-haiku-4-5-20251001"}}
 {"ts":"...","level":"debug","runId":"run_4a9f2b","event":"tool.dispatched","data":{"callId":"c1","toolName":"web_search","attempt":1}}
 {"ts":"...","level":"warn","runId":"run_4a9f2b","event":"tool.retrying","data":{"callId":"c1","attempt":2,"delayMs":623}}
 {"ts":"...","level":"info","runId":"run_4a9f2b","event":"tool.succeeded","data":{"durationMs":780,"cacheHit":false}}
 {"ts":"...","level":"info","runId":"run_4a9f2b","event":"agent.completed","data":{"totalTokens":2841,"steps":3}}
 ```
 
-`LOG_LEVEL=debug` shows the execution plan, cache checks, and every dispatch. `LOG_LEVEL=warn` shows only retries and failures.
+`LOG_LEVEL=debug` shows the execution plan, cache checks, and every dispatch. `LOG_LEVEL=warn` shows only retries and failures. NDJSON is ingested without configuration by Datadog, CloudWatch, and Splunk.
 
 ## Tests
 
-276 tests across 15 files.
+322 tests across 15 files.
 
 ```bash
 npm test               # unit + integration
 npm run test:coverage  # with lcov report
 ```
 
-The integration tests replace the Anthropic SDK with a deterministic mock - no credentials needed, fully reproducible. Covered failure modes: timeouts, input validation errors, retry exhaustion, dependency cycles, budget limits, partial parallel failures, `toolDependencies` sequencing.
+The integration tests replace the Anthropic SDK with a deterministic mock - no credentials needed, fully reproducible. Covered failure modes: timeouts, input validation errors, retry exhaustion, dependency cycles, budget limits, partial parallel failures, `toolDependencies` sequencing, construction-time validation, and `abort()` pre-run and mid-run cancellation.
 
-## Production extension points
+Unit coverage: 99% statements, 93% branches.
 
-These are intentionally out of scope, with the extension point for each:
+## Extending it
 
-- **Distributed cache** - implement `Cache` against Redis using the same SHA-256 key scheme; inject via `AgentOptions.cache`. No changes to executor or agent.
-- **Streaming** - `ToolExecutor.execute` currently awaits the complete result. True streaming would require `execute` to return `AsyncIterable<ToolEvent>` where `succeeded` is the terminal event.
-- **Trace persistence** - `ExecutionTrace` is a plain serialisable object. Store by `runId` for run replay, A/B testing, and cost attribution.
-- **Model-agnostic** - the Anthropic SDK is isolated in `Agent`. Replacing it requires changes in one file and one type import.
+**Distributed cache.** The `Cache` interface is three methods: `configure`, `get`, `set`. Implement it against Redis and inject at construction. The executor and agent are unchanged - they don't know or care what's behind the interface. The SHA-256 key scheme works across processes because it's deterministic: the same logical input always produces the same 16-char hex key regardless of where it was generated.
+
+**Model-agnostic.** The Anthropic SDK lives in one file (`agent.ts`). The only thing that would change to support OpenAI or Gemini is the API call and response parsing inside `Agent.run()`. Everything downstream - the scheduler, executor, cache, event stream - operates on `ToolCall[]` and `ToolResult[]`, which are your types, not the SDK's.
+
+**Trace persistence.** `ExecutionTrace` is a plain object with no circular references. Store it by `runId` and you get run replay, prompt A/B testing against historical inputs, and per-task cost attribution.
+
+**Streaming tool results.** Currently `execute()` awaits the complete result. Making it return `AsyncIterable<ToolEvent>` - where `succeeded` is the terminal event - would let long-running tools stream partial progress. The scheduler and cache are unaffected; the blast radius is `ToolExecutor` and the agent loop's result-collection logic.
 
 ## Demo
 
@@ -356,7 +337,7 @@ export ANTHROPIC_API_KEY=sk-...
 npm run demo        # runs a multi-step research task
 npm run demo:dry    # prints the task and tools without calling the API
 
-# Real web search (mock data used otherwise)
+# Real web search (mock data used otherwise):
 export BRAVE_SEARCH_API_KEY=BSA...
 npm run demo
 ```
@@ -371,6 +352,9 @@ src/
 ├── observability/ logger (NDJSON), trace renderer, EventEmitter
 ├── types/         ToolDefinition, AgentResult, ExecutionTrace, ToolEvent, policies
 └── index.ts       public API - everything not exported here is an internal detail
+
+benchmarks/
+└── parallel-vs-sequential.ts   measures scheduler speedup with real wall-clock numbers
 
 tests/
 ├── unit/          one file per source module (14 suites)
