@@ -21,13 +21,13 @@ Both web searches and the calculator ran simultaneously in step 1. The file read
 
 ## Why I built this
 
-I was building an agent that made two web searches per turn - independent queries, no reason one had to wait for the other. Every implementation I found ran them sequentially, because the model issues tool calls as a list and the obvious thing is to execute them one by one. On a turn with three independent 200ms calls, that's 600ms. The three calls should take 200ms.
+I was building an agent that made two web searches per turn. They were independent queries; there was no reason one had to wait for the other. Every implementation I found ran them sequentially, because the model issues tool calls as a list and the obvious thing is to execute them one by one. On a turn with three independent 200ms calls, that's 600ms. The three calls should take 200ms.
 
-Fixing it properly meant the agent loop needed to know which calls were independent and which had real data dependencies. Once I started thinking about that, the loop was also obviously doing too many other things: calling the model, managing execution order, handling retries, writing to cache. Those are separate problems and they don't belong tangled together.
+Fixing it properly meant the agent loop needed to know which calls were independent and which had real data dependencies. Once I started thinking about that, the loop was also obviously doing too many other things: calling the model, managing execution order, handling retries, and writing to cache. Those are separate problems, and they don't belong tangled together.
 
 So I pulled them apart. The scheduler (Kahn's algorithm) groups calls into execution levels. The executor handles timeout, retry, and cache per-call. The loop just calls the model, hands tool calls to the scheduler, runs each level via `Promise.allSettled`, and feeds results back.
 
-The other thing that bothered me: most agent implementations let tool errors throw. One failed tool call crashes the entire run. The right behaviour is to return a typed error result to the model and let it decide - try different parameters, use a different tool, or answer from what it already has. The executor never throws.
+The other thing that bothered me: most agent implementations let tool errors throw. One failed tool call crashes the entire run. The right behaviour is to return a typed error result to the model and let it decide: try different parameters, use a different tool, or answer from what it already has. The executor never throws.
 
 ## Measured performance
 
@@ -76,11 +76,11 @@ ToolExecutor (per call)
   └─ write to ResultCache
 ```
 
-The scheduler groups calls into levels using Kahn's algorithm - everything in a level runs via `Promise.allSettled` (not `Promise.all`, so one failure doesn't cancel siblings), and cycles throw `CyclicDependencyError` at scheduling time rather than producing mysterious ordering at runtime.
+The scheduler groups calls into levels using Kahn's algorithm. Everything in a level runs via `Promise.allSettled` (not `Promise.all`, so one failure doesn't cancel siblings), and cycles throw `CyclicDependencyError` at scheduling time rather than producing mysterious ordering at runtime.
 
 The result cache is SHA-256 content-addressable. `{a:1,b:2}` and `{b:2,a:1}` hit the same entry because object keys are canonicalised before hashing. Each tool gets its own LRU store so a high-traffic tool can't evict results belonging to others.
 
-The executor never throws. Every failure path - not found, bad input, timeout, execution error, retry exhaustion - returns a typed `ToolResult` with a machine-readable error code the model can reason about.
+The executor never throws. Every failure path (not found, bad input, timeout, execution error, retry exhaustion) returns a typed `ToolResult` with a machine-readable error code the model can reason about.
 
 ## Design decisions
 
@@ -88,19 +88,19 @@ The two things I spent the most time on were the scheduler and the cache key.
 
 For the scheduler, I chose Kahn's algorithm over DFS topological sort because cycle detection is implicit - any node with nonzero in-degree after the sweep is part of a cycle. DFS gives you the same ordering but requires a separate visited-set check bolted on afterwards.
 
-For the cache key, the non-obvious part is canonicalisation. `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings, so the same logical tool input misses the cache depending on property insertion order. Sorting object keys recursively before hashing fixes this. I use SHA-256 rather than a faster hash (djb2, FNV) because non-cryptographic hashes can cluster on structured JSON - similar inputs produce similar digests, which raises the practical collision rate above the birthday-bound theoretical rate. The 64-bit prefix gives P(collision) ≈ 2.7×10⁻⁸ for 10⁶ inputs, which is acceptable for a cache where a false positive serves stale data rather than causing corruption.
+For the cache key, the non-obvious part is canonicalisation. `JSON.stringify({a:1,b:2})` and `JSON.stringify({b:2,a:1})` produce different strings, so the same logical tool input misses the cache depending on property insertion order. Sorting object keys recursively before hashing fixes this. I use SHA-256 rather than a faster hash (djb2, FNV) because non-cryptographic hashes can cluster on structured JSON. Similar inputs produce similar digests, which raises the practical collision rate above the birthday-bound theoretical rate. The 64-bit prefix gives P(collision) ≈ 2.7×10⁻⁸ for 10⁶ inputs, which is acceptable for a cache where a false positive serves stale data rather than causing corruption.
 
-Two interface decisions: `CachePolicy` is a discriminated union rather than a flat object, so accessing `ttlMs` on a `"no-cache"` policy is a compile error instead of a silent runtime bug. Cache capacity is configured at construction rather than per write - early versions took `maxEntries` on every `set()` call, which is a leaky interface that any Redis backend would have to accept a parameter it can't use.
+Two interface decisions: `CachePolicy` is a discriminated union rather than a flat object, so accessing `ttlMs` on a `"no-cache"` policy is a compile error instead of a silent runtime bug. Cache capacity is configured at construction rather than per write. Early versions took `maxEntries` on every `set()` call, which is a leaky interface that any Redis backend would have to accept a parameter it can't use.
 
 The dependency graph is validated at construction time because a misspelled tool name previously produced no error and no sequencing - it silently dropped the dependency and the ordering bug only showed up at runtime. Retry jitter is there because without it, clients that all fail at the same moment retry at the same moment, hitting a recovering service with the same burst that just took it down.
 
 ## What I'd do differently
 
-The `toolDependencies` graph is declared statically on the agent, not per-call. If you want `summarise_results` to depend on `web_search`, you declare it globally - it applies every turn, even turns where `web_search` isn't called (which the resolver handles by ignoring absent dependencies). The right interface is probably per-invocation dependency hints from the model, but the Anthropic API doesn't expose that in a structured way yet. This isn't just a waiting-for-the-API situation - it reflects a real design constraint: static declaration is explicit and testable, but it prevents context-dependent sequencing that a smarter graph would support.
+The `toolDependencies` graph is declared statically on the agent, not per-call. If you want `summarise_results` to depend on `web_search`, you declare it globally. It applies every turn, even turns where `web_search` isn't called (which the resolver handles by ignoring absent dependencies). The right interface is probably per-invocation dependency hints from the model, but the Anthropic API doesn't expose that in a structured way yet. This isn't just a waiting-for-the-API situation, it reflects a real design constraint: static declaration is explicit and testable, but it prevents context-dependent sequencing that a smarter graph would support.
 
-The cache key uses the first 16 hex chars (64 bits) of the SHA-256 digest. 64 bits gives P(collision) ≈ 2.7×10⁻⁸ at 10⁶ distinct inputs - fine for tool-call caching where a false positive serves stale data rather than causing corruption. But the truncation is a choice with a real tradeoff: the full 64-char digest would eliminate collision risk entirely at the cost of a larger key footprint per entry. For a distributed Redis cache processing millions of calls per day, the full digest is the right call. I'd make this configurable at `ResultCache` construction time.
+The cache key uses the first 16 hex chars (64 bits) of the SHA-256 digest. 64 bits gives P(collision) ≈ 2.7×10⁻⁸ at 10⁶ distinct inputs. This is fine for tool-call caching where a false positive serves stale data rather than causing corruption. But the truncation is a choice with a real tradeoff: the full 64-char digest would eliminate collision risk entirely at the cost of a larger key footprint per entry. For a distributed Redis cache processing millions of calls per day, the full digest is the right call. I'd make this configurable at `ResultCache` construction time.
 
-For tools that implement cooperative cancellation (accepting `signal?: AbortSignal` in their `execute` function), in-flight work stops immediately when a timeout or abort fires - no background resource consumption, no duplicate side effects on retry. The built-in tools all do this: `fetchTool` and `webSearchTool` forward the signal to `fetch()`, and `fileReaderTool` checks it at each I/O boundary. Custom tools that ignore the signal still work correctly via the external `Promise.race`, but their timed-out execution continues in the background until it settles.
+For tools that implement cooperative cancellation (accepting `signal?: AbortSignal` in their `execute` function), in-flight work stops immediately when a timeout or abort fires, meaning no background resource consumption, no duplicate side effects on retry. The built-in tools all do this: `fetchTool` and `webSearchTool` forward the signal to `fetch()`, and `fileReaderTool` checks it at each I/O boundary. Custom tools that ignore the signal still work correctly via the external `Promise.race`, but their timed-out execution continues in the background until it settles.
 
 ## Installation
 
@@ -152,7 +152,7 @@ if (result.status === "success") {
 
 ## Tool dependencies
 
-By default, all tool calls in a single model turn run concurrently. When one tool genuinely needs the output of another, declare it in `toolDependencies`. All names must be registered in the registry - the constructor throws immediately if any are unknown.
+By default, all tool calls in a single model turn run concurrently. When one tool genuinely needs the output of another, declare it in `toolDependencies`. All names must be registered in the registry, as the constructor throws immediately if any are unknown.
 
 ```typescript
 const agent = new Agent(registry, {
@@ -182,7 +182,7 @@ if (result.status === "error") {
 }
 ```
 
-`run()` always resolves - it never rejects. Calling `abort()` before `run()` is valid; calling it when no run is active is a no-op.
+`run()` always resolves and never rejects. Calling `abort()` before `run()` is valid; calling it when no run is active is a no-op.
 
 ## Live event stream
 
@@ -317,13 +317,13 @@ Unit coverage: 99% statements, 93% branches.
 
 ## Extending it
 
-**Distributed cache.** The `Cache` interface is three methods: `configure`, `get`, `set`. Implement it against Redis and inject at construction. The executor and agent are unchanged - they don't know or care what's behind the interface. The SHA-256 key scheme works across processes because it's deterministic: the same logical input always produces the same 16-char hex key regardless of where it was generated.
+**Distributed cache.** The `Cache` interface is three methods: `configure`, `get`, `set`. Implement it against Redis and inject at construction. The executor and agent are unchanged. They don't know or care what's behind the interface. The SHA-256 key scheme works across processes because it's deterministic: the same logical input always produces the same 16-char hex key regardless of where it was generated.
 
 **Model-agnostic.** The Anthropic SDK lives in one file (`agent.ts`). The only thing that would change to support OpenAI or Gemini is the API call and response parsing inside `Agent.run()`. Everything downstream - the scheduler, executor, cache, event stream - operates on `ToolCall[]` and `ToolResult[]`, which are your types, not the SDK's.
 
 **Trace persistence.** `ExecutionTrace` is a plain object with no circular references. Store it by `runId` and you get run replay, prompt A/B testing against historical inputs, and per-task cost attribution.
 
-**Streaming tool results.** Currently `execute()` awaits the complete result. Making it return `AsyncIterable<ToolEvent>` - where `succeeded` is the terminal event - would let long-running tools stream partial progress. The scheduler and cache are unaffected; the blast radius is `ToolExecutor` and the agent loop's result-collection logic.
+**Streaming tool results.** Currently `execute()` awaits the complete result. Making it return `AsyncIterable<ToolEvent>`, where `succeeded` is the terminal event, would let long-running tools stream partial progress. The scheduler and cache are unaffected; the blast radius is `ToolExecutor` and the agent loop's result-collection logic.
 
 ## Demo
 
