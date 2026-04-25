@@ -337,6 +337,10 @@ export BRAVE_SEARCH_API_KEY=BSA...
 npm run demo
 ```
 
+## Built with liminal
+
+- **[pkg-eval](https://github.com/bonnie-mcconnell/pkg-eval)** - CLI that evaluates an npm package before you add it. Uses `toolDependencies` to enforce a real three-level execution graph: npm data fetches in parallel, GitHub stats wait for the repo URL, release history waits for the owner/repo name.
+
 ## Structure
 
 ```
